@@ -3,6 +3,4 @@ opencv-python-headless
 numpy
 Pillow
 scikit-image
-easyocr
-torch
-torchvision
+pytesseract

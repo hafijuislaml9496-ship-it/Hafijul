@@ -5,87 +5,83 @@ from PIL import Image
 from skimage.restoration import estimate_sigma
 import pytesseract
 
-st.set_page_config(page_title="Adobe Stock Pro Validator", layout="wide")
+# কনফিগারেশন
+st.set_page_config(page_title="Adobe Stock Master Intelligence", layout="wide")
 
 st.markdown("""
     <style>
-    .pass-box { background-color: #d4edda; border: 2px solid #28a745; padding: 15px; border-radius: 10px; color: #155724; font-weight: bold; text-align: center; }
-    .warn-box { background-color: #fff3cd; border: 2px solid #ffc107; padding: 15px; border-radius: 10px; color: #856404; }
-    .prompt-container { background-color: #f1f3f5; padding: 15px; border-radius: 8px; font-family: monospace; border: 1px solid #dee2e6; margin-top: 10px; }
+    .pass-card { background-color: #e6fffa; border: 2px solid #38b2ac; padding: 20px; border-radius: 15px; color: #234e52; text-align: center; }
+    .fail-card { background-color: #fff5f5; border: 2px solid #e53e3e; padding: 20px; border-radius: 15px; color: #742a2a; text-align: center; }
+    .prompt-box { background-color: #f7fafc; border: 1px dashed #4a5568; padding: 15px; border-radius: 10px; font-family: monospace; color: #2d3748; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚖️ Adobe Stock Quality Matcher")
-st.write("এই টুলটি এখন Adobe-এর আসল একসেপ্টেন্স লেভেলের সাথে ক্যালিব্রেট করা হয়েছে।")
+st.title("🧠 Adobe Stock Master Auditor (Pro AI)")
+st.write("এই টুলটি এখন প্রফেশনাল বোকেহ (Bokeh), নাইট শট এবং কমার্শিয়াল গ্রাফিক্স শনাক্ত করতে সক্ষম।")
 
-uploaded_file = st.file_uploader("আপনার ছবি আপলোড করুন...", type=["jpg", "jpeg"])
+uploaded_file = st.file_uploader("আপনার ছবিটি আপলোড করুন...", type=["jpg", "jpeg"])
+
+def advanced_audit(img_array, pil_img):
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    w, h = pil_img.size
+    mp = (w * h) / 1000000
+    
+    # ১. স্মার্ট শার্পনেস (১০x১০ গ্রিড অ্যানালাইসিস)
+    # প্রফেশনাল ছবিতে শুধু সাবজেক্ট শার্প থাকে। আমরা পুরো ছবির সেরা ৫% শার্পনেস দেখব।
+    gh, gw = gray.shape[0]//10, gray.shape[1]//10
+    scores = []
+    for i in range(10):
+        for j in range(10):
+            section = gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw]
+            scores.append(cv2.Laplacian(section, cv2.CV_64F).var())
+    
+    peak_sharpness = sorted(scores, reverse=True)[5] # সেরা ৫ম গ্রিড স্কোর
+    
+    # ২. ডাইনামিক নয়েজ চেক (আলোর ওপর ভিত্তি করে)
+    avg_brightness = np.mean(gray)
+    noise_lvl = np.mean(estimate_sigma(img_array, channel_axis=-1))
+    
+    # রাতের ছবির জন্য নয়েজ লিমিট বেশি হবে
+    noise_threshold = 9.0 if avg_brightness < 50 else 6.0
+    
+    # ৩. লোগো/টেক্সট চেক
+    text = pytesseract.image_to_string(pil_img).strip()
+    
+    return mp, peak_sharpness, noise_lvl, noise_threshold, text
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     img_array = np.array(image)
     
     with st.spinner('বিশ্লেষণ চলছে...'):
-        # টেকনিক্যাল ডেটা
-        w, h = image.size
-        mp = (w * h) / 1000000
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # স্মার্ট শার্পনেস (খুবই নমনীয় রাখা হয়েছে প্রফেশনাল ছবির জন্য)
-        sharp_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-        
-        # নয়েজ ক্যালকুলেশন
-        noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
-        
-        # টেক্সট স্ক্যান
-        text = pytesseract.image_to_string(image).strip()
+        mp, sharp, noise, n_limit, text = advanced_audit(img_array, image)
 
     col1, col2 = st.columns([1, 1])
     with col1:
         st.image(image, use_column_width=True)
 
     with col2:
-        st.subheader("📢 অডিট রিপোর্ট")
+        st.subheader("📊 টেকনিক্যাল রিপোর্ট")
         
-        critical_errors = []
-        warnings = []
+        fail_reasons = []
+        if mp < 4.0: fail_reasons.append(f"রেজোলিউশন কম ({mp:.2f}MP)")
+        if sharp < 12: fail_reasons.append("ছবিটি অতিরিক্ত ঝাপসা (No focal point)")
+        if noise > n_limit: fail_reasons.append(f"অতিরিক্ত নয়েজ/গ্রেইন ({noise:.2f})")
+        if len(text) > 4: fail_reasons.append(f"লোগো বা টেক্সট ডিটেক্ট হয়েছে: {text[:10]}")
 
-        # ১. রেজোলিউশন (এটি অ্যাডোবির হার্ড রুল)
-        if mp < 4.0:
-            critical_errors.append(f"❌ রেজোলিউশন কম ({mp:.2f} MP)। অন্তত ৪ MP লাগবে।")
-
-        # ২. শার্পনেস (অ্যাডোবি স্ট্যান্ডার্ড অনুযায়ী অ্যাডজাস্ট করা)
-        if sharp_score < 12: # ১৫ এর নিচে হলে সত্যিই খুব ঝাপসা
-            critical_errors.append("❌ ছবি অনেক বেশি ঝাপসা।")
-        elif sharp_score < 25:
-            warnings.append("⚠️ ছবি কিছুটা সফট, তবে অ্যাডোবি এটি গ্রহণ করতে পারে।")
-
-        # ৩. নয়েজ (অ্যাডজাস্ট করা)
-        if noise > 8.0:
-            critical_errors.append("❌ ছবিতে অতিরিক্ত নয়েজ (Grain)।")
-        elif noise > 5.0:
-            warnings.append("⚠️ সামান্য নয়েজ আছে, তবে এটি গ্রহণযোগ্য।")
-
-        # ৪. লোগো
-        if len(text) > 3:
-            critical_errors.append(f"❌ লোগো বা টেক্সট ডিটেক্ট হয়েছে: '{text[:15]}'")
-
-        # ফলাফল প্রদর্শন
-        if not critical_errors:
-            st.markdown('<div class="pass-box">✅ ছবিটি Adobe Stock-এর স্ট্যান্ডার্ড অনুযায়ী উপযুক্ত!</div>', unsafe_allow_html=True)
-            if warnings:
-                st.write("### ছোট কিছু বিষয় লক্ষ্য করুন:")
-                for w in warnings: st.warning(w)
+        if not fail_reasons:
+            st.markdown('<div class="pass-card">✅ এই ছবিটি Adobe Stock-এ অ্যাপ্রুভ হওয়ার জন্য একদম পারফেক্ট!</div>', unsafe_allow_html=True)
+            st.balloons()
         else:
-            st.error("🛑 রিজেকশন রিস্ক আছে!")
-            for e in critical_errors: st.write(e)
+            st.markdown('<div class="fail-card">🛑 রিজেকশন রিস্ক আছে!</div>', unsafe_allow_html=True)
+            for r in fail_reasons: st.write(f"- {r}")
 
-        # মাস্টার প্রম্পট জেনারেটর
-        if critical_errors or warnings:
-            st.subheader("🎨 AI Re-Creation Master Prompt")
-            st.write("এই ছবিটিকে পারফেক্ট করার জন্য এই প্রম্পটটি এআই-তে ব্যবহার করুন:")
-            
-            # সাবজেক্ট ডিটেকশন সিমুলেশন
-            p_text = f"Masterpiece stock photography, [INPUT_SUBJECT_HERE], cinematic lighting, ultra-sharp focus, 8k resolution, photorealistic, clean composition, no logos, no text, zero noise, high clarity, commercially ready --ar 16:9 --v 6.0"
-            
-            st.markdown(f'<div class="prompt-container">{p_text}</div>', unsafe_allow_html=True)
-            st.caption("নির্দেশ: [INPUT_SUBJECT_HERE] এর জায়গায় আপনার ছবির নাম লিখুন।")
+        st.subheader("🎨 Master Re-Creation AI Prompt")
+        st.write("এই স্টাইলের পারফেক্ট ছবি আবার জেনারেট করতে এই প্রম্পটটি ব্যবহার করুন:")
+        
+        # স্মার্ট প্রম্পট জেনারেটর
+        style = "night photography, cinematic lighting, high contrast" if n_limit > 7 else "commercial stock photography, clean studio lighting, sharp focus, 8k"
+        m_prompt = f"Professional {style}, [SUBJECT HERE], high-end optics, f/1.8, master composition, no text, no logo, commercially ready --ar 16:9 --v 6.0"
+        
+        st.markdown(f'<div class="prompt-box">{m_prompt}</div>', unsafe_allow_html=True)
+        st.caption("নির্দেশ: [SUBJECT HERE] এর জায়গায় ছবির মূল বিষয়বস্তু লিখুন।")

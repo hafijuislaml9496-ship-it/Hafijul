@@ -1,7 +1,3 @@
-"""
-Adobe Stock Auditor with Individual Master Prompts
-প্রতিটি ইমেজের জন্য আলাদা AI Prompt জেনারেট করে
-"""
 
 import streamlit as st
 import cv2
@@ -11,408 +7,377 @@ import io
 import base64
 import tempfile
 import os
-import shutil
 import re
 from datetime import datetime
 
-st.set_page_config(
-    page_title="Adobe Stock Pro Auditor",
-    page_icon="🎨",
-    layout="wide"
-)
+st.set_page_config(page_title="Adobe Stock Auditor", page_icon="🎨", layout="wide")
 
-# Simple CSS
 st.markdown("""
 <style>
-.status-accepted {
-    background-color: #00ff9d;
-    color: #000;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-weight: bold;
-    display: inline-block;
-}
-.status-risky {
-    background-color: #ffb443;
-    color: #000;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-weight: bold;
-    display: inline-block;
-}
-.status-rejected {
-    background-color: #ff4444;
-    color: #fff;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-weight: bold;
-    display: inline-block;
-}
+.badge-ok { background-color: #00ff9d; color: #000; padding: 4px 12px; border-radius: 20px; display: inline-block; }
+.badge-risky { background-color: #ffb443; color: #000; padding: 4px 12px; border-radius: 20px; display: inline-block; }
+.badge-no { background-color: #ff4444; color: #fff; padding: 4px 12px; border-radius: 20px; display: inline-block; }
 </style>
 """, unsafe_allow_html=True)
 
-class AdobeStockAuditor:
-    def __init__(self, image_path):
-        self.image_path = image_path
-        self.image = None
+class Auditor:
+    def __init__(self, path):
+        self.path = path
+        self.img = None
         self.gray = None
-        self.results = {
-            'status': 'PENDING',
-            'score': 0,
-            'errors': [],
-            'warnings': [],
-            'metrics': {},
-            'master_prompt': '',
-            'recreation_prompt': ''
+        self.result = {
+            'status': '', 
+            'score': 0, 
+            'errors': [], 
+            'warnings': [], 
+            'metrics': {}, 
+            'prompt': '',
+            'simple_prompt': ''
         }
-        
-    def load_image(self):
-        try:
-            self.image = cv2.imread(self.image_path)
-            if self.image is None:
-                raise ValueError("Cannot load image")
-            self.gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
-            self.h, self.w = self.image.shape[:2]
-            return True
-        except Exception as e:
-            self.results['errors'].append("Load error: " + str(e))
+    
+    def load(self):
+        self.img = cv2.imread(self.path)
+        if self.img is None:
             return False
+        self.gray = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
+        self.h, self.w = self.img.shape[:2]
+        return True
     
-    def analyze(self):
-        megapixels = (self.w * self.h) / 1000000
-        self.results['metrics']['megapixels'] = round(megapixels, 2)
-        self.results['metrics']['dimensions'] = str(self.w) + "x" + str(self.h)
+    def check(self):
+        errors = []
+        warnings = []
         
-        if megapixels < 4.0:
-            self.results['errors'].append("Low resolution: " + str(megapixels) + "MP (need 4MP+)")
+        # Resolution check
+        mp = (self.w * self.h) / 1000000
+        self.result['metrics']['mp'] = round(mp, 2)
+        if mp < 4.0:
+            errors.append("low_resolution")
+        elif mp < 5.0:
+            warnings.append("low_resolution_warning")
         
-        laplacian = cv2.Laplacian(self.gray, cv2.CV_64F)
-        sharpness = laplacian.var()
-        self.results['metrics']['sharpness'] = round(sharpness, 2)
+        # Sharpness check
+        lap = cv2.Laplacian(self.gray, cv2.CV_64F)
+        sharp = lap.var()
+        self.result['metrics']['sharp'] = round(sharp, 1)
+        if sharp < 40:
+            errors.append("blurry")
+        elif sharp < 60:
+            warnings.append("soft_focus")
         
-        if sharpness < 40:
-            self.results['errors'].append("Blurry image: " + str(round(sharpness, 1)))
-        elif sharpness < 60:
-            self.results['warnings'].append("Soft focus: " + str(round(sharpness, 1)))
-        
-        blur = cv2.GaussianBlur(self.gray, (5, 5), 0)
+        # Noise check
+        blur = cv2.GaussianBlur(self.gray, (5,5), 0)
         noise = np.mean(np.abs(self.gray.astype(float) - blur.astype(float)))
-        self.results['metrics']['noise'] = round(noise, 2)
-        
+        self.result['metrics']['noise'] = round(noise, 1)
         if noise > 10:
-            self.results['errors'].append("Too noisy: " + str(round(noise, 1)))
-        elif noise > 6:
-            self.results['warnings'].append("Visible grain: " + str(round(noise, 1)))
+            errors.append("noisy")
+        elif noise > 7:
+            warnings.append("grainy")
         
-        brightness = np.mean(self.gray)
-        self.results['metrics']['brightness'] = round(brightness, 2)
+        # Brightness check
+        bright = np.mean(self.gray)
+        self.result['metrics']['bright'] = round(bright)
+        if bright < 80:
+            errors.append("underexposed")
+        elif bright > 200:
+            errors.append("overexposed")
         
-        if brightness < 80:
-            self.results['errors'].append("Too dark (underexposed)")
-        elif brightness > 200:
-            self.results['errors'].append("Too bright (overexposed)")
+        # Texture check (waxy skin)
+        grad_x = cv2.Sobel(self.gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(self.gray, cv2.CV_64F, 0, 1, ksize=3)
+        texture = np.mean(np.sqrt(grad_x**2 + grad_y**2))
+        self.result['metrics']['texture'] = round(texture, 1)
+        if texture < 25:
+            errors.append("waxy_skin")
         
+        self.result['errors'] = errors
+        self.result['warnings'] = warnings
+        
+        # Calculate score
         score = 100
-        score -= len(self.results['errors']) * 15
-        score -= len(self.results['warnings']) * 5
+        score -= len(errors) * 15
+        score -= len(warnings) * 5
+        self.result['score'] = max(0, min(100, score))
         
-        if sharpness > 100:
-            score += 10
-        elif sharpness < 50:
-            score -= 20
-            
-        if megapixels > 12:
-            score += 10
-        elif megapixels < 5:
-            score -= 15
-            
-        self.results['score'] = max(0, min(100, score))
-        
-        if self.results['score'] >= 80 and len(self.results['errors']) == 0:
-            self.results['status'] = 'ACCEPTED'
-        elif self.results['score'] >= 60:
-            self.results['status'] = 'RISKY'
+        # Set status
+        if self.result['score'] >= 80 and len(errors) == 0:
+            self.result['status'] = 'ACCEPTED'
+        elif self.result['score'] >= 60:
+            self.result['status'] = 'RISKY'
         else:
-            self.results['status'] = 'REJECTED'
+            self.result['status'] = 'REJECTED'
         
-        return self.results
+        return self.result
     
-    def extract_subject(self):
-        filename = os.path.basename(self.image_path)
-        name = os.path.splitext(filename)[0]
-        name_clean = re.sub(r'[_-]+', ' ', name).lower()
+    def get_subject_from_filename(self):
+        name = os.path.basename(self.path)
+        name = os.path.splitext(name)[0]
+        name = name.lower()
         
-        if 'doctor' in name_clean:
+        if 'doctor' in name:
             return 'medical professional'
-        elif 'nurse' in name_clean:
+        if 'nurse' in name:
             return 'healthcare worker'
-        elif 'patient' in name_clean:
+        if 'patient' in name:
             return 'patient'
-        elif 'business' in name_clean:
+        if 'business' in name:
             return 'business professional'
-        elif 'woman' in name_clean:
+        if 'woman' in name:
             return 'woman'
-        elif 'man' in name_clean:
+        if 'man' in name:
             return 'man'
-        elif 'tablet' in name_clean:
+        if 'tablet' in name:
             return 'person using tablet'
-        elif 'laptop' in name_clean:
+        if 'laptop' in name:
             return 'person using laptop'
-        elif 'phone' in name_clean:
+        if 'phone' in name:
             return 'person using smartphone'
-        elif 'office' in name_clean:
+        if 'office' in name:
             return 'office worker'
-        else:
-            return 'person'
+        if 'medical' in name:
+            return 'medical scene'
+        if 'hand' in name:
+            return 'hands'
+        return 'person'
     
-    def generate_prompts(self):
-        subject = self.extract_subject()
-        errors = self.results['errors']
+    def generate_custom_prompt(self):
+        subject = self.get_subject_from_filename()
+        errors = self.result['errors']
+        warnings = self.result['warnings']
         
-        fixes = []
-        for err in errors:
-            err_lower = err.lower()
-            if 'resolution' in err_lower:
-                fixes.append("- Generate at 8MP minimum (3840x2160)")
-            if 'blurry' in err_lower or 'soft' in err_lower:
-                fixes.append("- Ensure crystal clear sharp focus")
-            if 'noisy' in err_lower or 'grain' in err_lower:
-                fixes.append("- Use ISO 100, no visible noise")
-            if 'dark' in err_lower:
-                fixes.append("- Proper exposure, well-lit scene")
-            if 'bright' in err_lower:
-                fixes.append("- Balanced exposure, no blown highlights")
+        # Build prompt based on actual issues found
+        prompt_parts = []
+        prompt_parts.append("Ultra-realistic stock photo of " + subject)
         
-        if not fixes:
-            fixes.append("- Maintain current quality")
+        # Add quality based on issues
+        if 'blurry' in errors:
+            prompt_parts.append("crystal clear tack-sharp focus, no motion blur")
+        elif 'soft_focus' in warnings:
+            prompt_parts.append("sharp focus on main subject")
+        else:
+            prompt_parts.append("excellent sharpness")
         
-        # Master prompt building
-        master_prompt_lines = []
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("MASTER PROMPT FOR ADOBE STOCK")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("")
-        master_prompt_lines.append("Original File: " + os.path.basename(self.image_path))
-        master_prompt_lines.append("Subject: " + subject.title())
-        master_prompt_lines.append("Current Score: " + str(self.results['score']) + "/100")
-        master_prompt_lines.append("Issues Found: " + str(len(errors)))
-        master_prompt_lines.append("")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("COPY THIS PROMPT TO AI IMAGE GENERATOR")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("")
+        if 'noisy' in errors:
+            prompt_parts.append("ISO 100, completely noise-free")
+        elif 'grainy' in warnings:
+            prompt_parts.append("minimal grain, clean image")
         
-        main_prompt = '"Ultra-realistic stock photo of ' + subject + ' in professional environment. 8K resolution, crystal clear sharp focus. Natural skin texture with visible pores, no waxy appearance. Professional commercial photography quality. Clean background, no logos or watermarks. Perfect exposure, natural lighting. Shot on Sony A7R IV, 85mm lens, f/2.8, ISO 100. Editorial quality, Adobe Stock ready."'
-        master_prompt_lines.append(main_prompt)
-        master_prompt_lines.append("")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("FIXES NEEDED FOR THIS IMAGE")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("")
+        if 'waxy_skin' in errors:
+            prompt_parts.append("natural skin texture with visible pores, no plastic or waxy appearance")
+        else:
+            prompt_parts.append("natural authentic skin texture")
         
-        for fix in fixes:
-            master_prompt_lines.append(fix)
+        if 'underexposed' in errors:
+            prompt_parts.append("bright well-lit scene, proper exposure")
+        elif 'overexposed' in errors:
+            prompt_parts.append("balanced exposure, no blown highlights")
+        else:
+            prompt_parts.append("perfect exposure")
         
-        master_prompt_lines.append("")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("TECHNICAL REQUIREMENTS")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("")
-        master_prompt_lines.append("- Resolution: 8MP minimum (3840x2160)")
-        master_prompt_lines.append("- Sharpness: Laplacian variance > 80")
-        master_prompt_lines.append("- Noise: Under 5.0")
-        master_prompt_lines.append("- Format: JPEG, sRGB")
-        master_prompt_lines.append("- Aspect Ratio: 4:3, 3:2, or 16:9")
-        master_prompt_lines.append("- Max File Size: 45MB")
-        master_prompt_lines.append("")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("AVOID THESE")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("")
-        master_prompt_lines.append("- Blurry or soft focus")
-        master_prompt_lines.append("- Excessive noise or grain")
-        master_prompt_lines.append("- Waxy/plastic skin texture")
-        master_prompt_lines.append("- Logos, watermarks, brands")
-        master_prompt_lines.append("- Over/under exposure")
-        master_prompt_lines.append("- AI artifacts")
-        master_prompt_lines.append("")
-        master_prompt_lines.append("=" * 50)
-        master_prompt_lines.append("Generated: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        master_prompt_lines.append("=" * 50)
+        if 'low_resolution' in errors:
+            prompt_parts.append("8K resolution minimum (7680x4320)")
         
-        master_prompt = "\n".join(master_prompt_lines)
+        # Common good practices
+        prompt_parts.append("clean uncluttered background")
+        prompt_parts.append("no logos watermarks or text")
+        prompt_parts.append("professional commercial photography quality")
+        prompt_parts.append("shot on Sony A7R IV 85mm lens f/2.8")
+        prompt_parts.append("Adobe Stock ready")
         
-        # Simple prompt
-        simple_prompt = '"Ultra-realistic stock photo of ' + subject + ', 8K, crystal clear sharp focus, natural skin texture, clean background, no logos, professional lighting, Adobe Stock quality"'
+        # Join all parts
+        full_prompt = '"' + ", ".join(prompt_parts) + '"'
         
-        self.results['master_prompt'] = master_prompt
-        self.results['recreation_prompt'] = simple_prompt
+        # Also create a simple version
+        simple_parts = ["Ultra-realistic " + subject]
+        if 'blurry' in errors:
+            simple_parts.append("crystal clear sharp")
+        if 'waxy_skin' in errors:
+            simple_parts.append("natural skin texture")
+        if 'noisy' in errors:
+            simple_parts.append("no noise")
+        simple_parts.append("8K")
+        simple_parts.append("no logos")
+        simple_prompt = '"' + " ".join(simple_parts) + '"'
         
-        return master_prompt, simple_prompt
+        # Create detailed master prompt with explanation
+        master_prompt = "="*60 + "\n"
+        master_prompt += "MASTER PROMPT FOR: " + os.path.basename(self.path) + "\n"
+        master_prompt += "="*60 + "\n\n"
+        master_prompt += "Subject detected: " + subject.title() + "\n"
+        master_prompt += "Current score: " + str(self.result['score']) + "/100\n"
+        master_prompt += "Issues found: " + ", ".join(errors) if errors else "None\n\n"
+        master_prompt += "-"*60 + "\n"
+        master_prompt += "COPY THIS PROMPT TO AI GENERATOR:\n"
+        master_prompt += "-"*60 + "\n\n"
+        master_prompt += full_prompt + "\n\n"
+        
+        if errors:
+            master_prompt += "-"*60 + "\n"
+            master_prompt += "SPECIFIC FIXES NEEDED FOR THIS IMAGE:\n"
+            master_prompt += "-"*60 + "\n"
+            if 'blurry' in errors:
+                master_prompt += "• BLURRY: Need crystal clear sharp focus\n"
+            if 'noisy' in errors:
+                master_prompt += "• NOISY: Use lower ISO, add more light\n"
+            if 'waxy_skin' in errors:
+                master_prompt += "• WAXY SKIN: Don't over-smooth, keep natural texture\n"
+            if 'underexposed' in errors:
+                master_prompt += "• TOO DARK: Increase exposure, add fill light\n"
+            if 'overexposed' in errors:
+                master_prompt += "• TOO BRIGHT: Reduce highlights, balance exposure\n"
+            if 'low_resolution' in errors:
+                master_prompt += "• LOW RES: Generate at higher resolution\n"
+        
+        master_prompt += "\n" + "="*60 + "\n"
+        master_prompt += "Generated: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n"
+        master_prompt += "="*60
+        
+        self.result['prompt'] = master_prompt
+        self.result['simple_prompt'] = simple_prompt
+        self.result['full_prompt'] = full_prompt
+        
+        return master_prompt
 
-def create_thumbnail(image_path, size=(100, 100)):
+def make_thumbnail(path, size=(80, 80)):
     try:
-        img = Image.open(image_path)
-        img.thumbnail(size, Image.Resampling.LANCZOS)
-        buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
-        img_str = base64.b64encode(buffered.getvalue()).decode()
-        return "data:image/jpeg;base64," + img_str
+        img = Image.open(path)
+        img.thumbnail(size)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
     except:
         return None
 
 def main():
-    st.title("Adobe Stock Pro Auditor")
-    st.markdown("### প্রতিটি ইমেজের জন্য আলাদা AI Master Prompt + কপি বাটন")
+    st.title("🎨 Adobe Stock Smart Auditor")
+    st.markdown("### প্রতিটি ইমেজের সমস্যা অনুযায়ী আলাদা AI Prompt তৈরি করে")
     
     with st.sidebar:
-        st.header("কিভাবে ব্যবহার করবেন")
+        st.header("কিভাবে কাজ করে")
         st.write("1. ইমেজ আপলোড করুন")
-        st.write("2. অটো অডিট হবে")
-        st.write("3. রিজেক্ট হলে প্রম্পট দেখাবে")
-        st.write("4. কপি বাটন চেপে প্রম্পট কপি করুন")
-        st.write("5. Midjourney/DALL-E এ পেস্ট করুন")
-        st.write("6. নতুন ইমেজ বানান")
+        st.write("2. টুল ইমেজের সমস্যা শনাক্ত করে (ব্লারি? নয়েজি? ডার্ক?)")
+        st.write("3. শনাক্ত করা সমস্যা অনুযায়ী কাস্টম প্রম্পট তৈরি করে")
+        st.write("4. প্রম্পট কপি করে AI তে ব্যবহার করুন")
         st.divider()
-        st.header("চেক করা হয়")
-        st.write("- রেজোলিউশন (4MP+)")
-        st.write("- শার্পনেস (ব্লার চেক)")
-        st.write("- নয়েজ লেভেল")
-        st.write("- এক্সপোজার (লাইটিং)")
+        st.header("শনাক্ত করা হয়")
+        st.write("🔍 ব্লারি / সফট ফোকাস")
+        st.write("📊 নয়েজ / গ্রেইন")
+        st.write("💡 এক্সপোজার (ডার্ক/ব্রাইট)")
+        st.write("🎨 ওয়াক্সি স্কিন (ওভার-স্মুথিং)")
+        st.write("📐 রেজোলিউশন")
     
-    uploaded_files = st.file_uploader(
-        "ইমেজ আপলোড করুন (JPG/JPEG)",
-        type=['jpg', 'jpeg', 'JPG', 'JPEG'],
-        accept_multiple_files=True
-    )
+    files = st.file_uploader("ইমেজ আপলোড করুন (একাধিক)", type=['jpg','jpeg'], accept_multiple_files=True)
     
-    if uploaded_files:
+    if files:
         temp_dir = tempfile.mkdtemp()
         all_results = []
         
-        progress_bar = st.progress(0)
+        progress = st.progress(0)
         
-        for idx, file in enumerate(uploaded_files):
-            temp_path = os.path.join(temp_dir, file.name)
-            with open(temp_path, 'wb') as f:
-                f.write(file.getbuffer())
+        for i, f in enumerate(files):
+            path = os.path.join(temp_dir, f.name)
+            with open(path, 'wb') as fp:
+                fp.write(f.getbuffer())
             
-            auditor = AdobeStockAuditor(temp_path)
-            auditor.load_image()
-            results = auditor.analyze()
-            auditor.generate_prompts()
+            auditor = Auditor(path)
+            auditor.load()
+            result = auditor.check()
+            auditor.generate_custom_prompt()
             
-            results['filename'] = file.name
-            results['thumbnail'] = create_thumbnail(temp_path)
-            results['master_prompt'] = auditor.results['master_prompt']
-            results['recreation_prompt'] = auditor.results['recreation_prompt']
+            result['name'] = f.name
+            result['thumb'] = make_thumbnail(path)
+            result['prompt'] = auditor.result['prompt']
+            result['simple_prompt'] = auditor.result['simple_prompt']
+            result['full_prompt'] = auditor.result['full_prompt']
+            result['errors_list'] = auditor.result['errors']
             
-            all_results.append(results)
-            progress_bar.progress((idx + 1) / len(uploaded_files))
+            all_results.append(result)
+            progress.progress((i + 1) / len(files))
         
-        progress_bar.empty()
+        progress.empty()
         
-        st.divider()
-        
-        # Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
-        accepted = sum(1 for r in all_results if r['status'] == 'ACCEPTED')
-        risky = sum(1 for r in all_results if r['status'] == 'RISKY')
-        rejected = sum(1 for r in all_results if r['status'] == 'REJECTED')
-        
-        with col1:
-            st.metric("Total Images", len(all_results))
-        with col2:
-            st.metric("Accepted", accepted)
-        with col3:
-            st.metric("Risky", risky)
-        with col4:
-            st.metric("Rejected", rejected)
+        # Summary
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📸 Total", len(all_results))
+        c2.metric("✅ Accepted", sum(1 for r in all_results if r['status'] == 'ACCEPTED'))
+        c3.metric("⚠️ Risky", sum(1 for r in all_results if r['status'] == 'RISKY'))
+        c4.metric("❌ Rejected", sum(1 for r in all_results if r['status'] == 'REJECTED'))
         
         st.divider()
         
         # Show each result
-        for res in all_results:
-            # Status color
-            if res['status'] == 'ACCEPTED':
-                status_class = "status-accepted"
-            elif res['status'] == 'RISKY':
-                status_class = "status-risky"
-            else:
-                status_class = "status-rejected"
-            
-            # Display image card
-            st.image(res['thumbnail'], width=100)
-            st.markdown("**" + res['filename'] + "**")
-            st.markdown('<span class="' + status_class + '">' + res['status'] + '</span>', unsafe_allow_html=True)
-            st.write("Score: " + str(res['score']) + "/100")
-            st.write("Resolution: " + str(res['metrics'].get('megapixels', 'N/A')) + " MP")
-            st.write("Sharpness: " + str(res['metrics'].get('sharpness', 'N/A')))
-            st.write("Noise: " + str(res['metrics'].get('noise', 'N/A')))
-            st.write("Brightness: " + str(res['metrics'].get('brightness', 'N/A')))
-            
-            # Errors
-            if res['errors']:
-                with st.expander("কেন রিজেক্ট হয়েছে", expanded=True):
-                    for err in res['errors']:
-                        st.error(err)
-            
-            # Warnings
-            if res['warnings']:
-                with st.expander("সতর্কতা"):
-                    for warn in res['warnings']:
-                        st.warning(warn)
-            
-            # Prompts for rejected/risky images
-            if res['status'] != 'ACCEPTED':
+        for idx, r in enumerate(all_results):
+            with st.container():
+                col1, col2 = st.columns([1, 3])
+                
+                with col1:
+                    if r['thumb']:
+                        st.image(r['thumb'], width=100)
+                
+                with col2:
+                    st.subheader(r['name'])
+                    if r['status'] == 'ACCEPTED':
+                        st.markdown('<span class="badge-ok">✅ ACCEPTED</span>', unsafe_allow_html=True)
+                    elif r['status'] == 'RISKY':
+                        st.markdown('<span class="badge-risky">⚠️ RISKY</span>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<span class="badge-no">❌ REJECTED</span>', unsafe_allow_html=True)
+                    
+                    st.write(f"**Score:** {r['score']}/100")
+                    st.write(f"**Resolution:** {r['metrics']['mp']} MP")
+                    st.write(f"**Sharpness:** {r['metrics']['sharp']}")
+                    st.write(f"**Noise:** {r['metrics']['noise']}")
+                    st.write(f"**Brightness:** {r['metrics']['bright']}")
+                
+                # Show detected problems
+                if r['errors_list']:
+                    st.error("**❌ সমস্যা শনাক্ত:** " + ", ".join(r['errors_list']))
+                
+                # Show prompts only for rejected/risky
+                if r['status'] != 'ACCEPTED':
+                    st.divider()
+                    st.markdown("### 🎨 এই ইমেজ ঠিক করে বানানোর জন্য কাস্টম প্রম্পট")
+                    
+                    # Problem description
+                    st.info("**শনাক্ত করা সমস্যা অনুযায়ী নিচের প্রম্পট তৈরি করা হয়েছে:**")
+                    
+                    # Full prompt
+                    st.code(r['prompt'], language='markdown')
+                    
+                    # Copy button
+                    if st.button(f"📋 প্রম্পট কপি করুন", key=f"copy_{r['name']}_{idx}"):
+                        st.success("✅ প্রম্পট কপি হয়েছে!")
+                    
+                    # Simple prompt
+                    st.markdown("**সহজ ভার্সন (এক লাইনে):**")
+                    st.code(r['simple_prompt'], language='markdown')
+                    
+                    if st.button(f"📋 সহজ প্রম্পট কপি করুন", key=f"copy_simple_{r['name']}_{idx}"):
+                        st.success("✅ সহজ প্রম্পট কপি হয়েছে!")
+                
                 st.divider()
-                st.subheader("এই ইমেজ ঠিক করে বানানোর জন্য AI Prompt")
-                
-                # Full prompt
-                st.code(res['master_prompt'], language='markdown')
-                
-                # Copy button
-                if st.button("পুরো প্রম্পট কপি করুন", key="full_" + res['filename']):
-                    st.success("প্রম্পট কপি হয়েছে!")
-                
-                # Simple prompt
-                st.info(res['recreation_prompt'])
-                
-                if st.button("সহজ প্রম্পট কপি করুন", key="simple_" + res['filename']):
-                    st.success("সহজ প্রম্পট কপি হয়েছে!")
-            
-            st.divider()
         
-        # Download all prompts
-        rejected_images = [r for r in all_results if r['status'] != 'ACCEPTED']
-        if rejected_images:
+        # Download all
+        rejected = [r for r in all_results if r['status'] != 'ACCEPTED']
+        if rejected:
             all_text = ""
-            for r in rejected_images:
-                all_text += "="*60 + "\n"
-                all_text += "File: " + r['filename'] + "\n"
+            for r in rejected:
+                all_text += "\n" + "="*60 + "\n"
+                all_text += "File: " + r['name'] + "\n"
                 all_text += "Status: " + r['status'] + "\n"
                 all_text += "Score: " + str(r['score']) + "/100\n"
+                all_text += "Issues: " + ", ".join(r['errors_list']) + "\n"
                 all_text += "="*60 + "\n\n"
-                all_text += r['master_prompt'] + "\n\n"
-                all_text += "Simple Prompt:\n" + r['recreation_prompt'] + "\n\n"
+                all_text += r['prompt'] + "\n\n"
             
-            st.download_button(
-                label="সব প্রম্পট ডাউনলোড করুন (TXT)",
-                data=all_text,
-                file_name="adobe_prompts_" + datetime.now().strftime('%Y%m%d_%H%M%S') + ".txt",
-                mime="text/plain"
-            )
+            st.download_button("📥 সব প্রম্পট ডাউনলোড করুন", all_text, "prompts.txt")
         
+        import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
     
     else:
-        st.info("উপরে ইমেজ আপলোড করুন")
+        st.info("👆 ইমেজ আপলোড করুন")
         
-        with st.expander("উদাহরণ দেখুন"):
-            st.write("আপলোড করুন: doctor_tablet.jpg")
-            st.write("রিজেক্ট করলে প্রম্পট দেখাবে:")
-            st.code('"Ultra-realistic stock photo of medical professional, 8K, crystal clear sharp focus, natural skin texture, clean background, no logos, professional lighting, Adobe Stock quality"')
-            st.write("কপি করে Midjourney/DALL-E এ পেস্ট করুন -> নতুন ইমেজ বানান -> Adobe Stock এ আপলোড করুন")
-
-if __name__ == "__main__":
-    main()
+        with st.expander("📖 উদাহরণ দেখুন"):
+            st.markdown("""
+            **যদি আপনি doctor_tablet.jpg আপলোড করেন এবং ইমেজটি ব্লারি ও নয়েজি হয়, তাহলে প্রম্পট হবে:**
+            

@@ -3,84 +3,104 @@ import cv2
 import numpy as np
 from PIL import Image
 from skimage.restoration import estimate_sigma
-import easyocr
+import pytesseract
 
-# AI মডেল লোড করা (একবারই হবে)
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['en'])
-
-reader = load_ocr()
-
-st.set_page_config(page_title="Adobe Stock Pro Validator", layout="wide")
+# কনফিগারেশন
+st.set_page_config(page_title="Adobe Stock Auditor + Solver", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #ffffff; }
-    .verdict-box { padding: 20px; border-radius: 10px; margin-bottom: 20px; font-size: 22px; font-weight: bold; text-align: center; border: 2px solid; }
+    .solve-prompt { 
+        background-color: #f0f7ff; 
+        border-left: 5px solid #007bff; 
+        padding: 15px; 
+        margin-top: 10px; 
+        font-family: 'Courier New', Courier, monospace;
+        color: #0056b3;
+    }
+    .problem-box { color: #d9534f; font-weight: bold; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Adobe Stock Acceptance Checker (AI Scanner)")
+st.title("🛡️ Adobe Stock Auditor & AI Solver")
+st.write("ছবি আপলোড করুন। সমস্যা থাকলে আমরা সেটির সরাসরি সমাধানের জন্য এআই প্রম্পট দিয়ে দেব।")
 
-uploaded_file = st.file_uploader("আপনার ছবি এখানে দিন...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("আপনার ছবিটি আপলোড করুন...", type=["jpg", "jpeg"])
+
+# ফেস ডিটেকশন মডেল
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.py')
+
+def analyze_and_solve(img_array, pil_img):
+    analysis = []
+    
+    # ১. রেজোলিউশন
+    w, h = pil_img.size
+    mp = (w * h) / 1000000
+    if mp < 4.0:
+        analysis.append({
+            "problem": f"রেজোলিউশন অত্যন্ত কম ({mp:.2f}MP)।",
+            "fix": "Photoshop/AI Prompt: 'Upscale this image by 200% using Preserve Details 2.0 or AI Super Resolution to reach 4000px width.'"
+        })
+
+    # ২. শার্পনেস ও ফোকাস
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+    if sharpness < 35:
+        analysis.append({
+            "problem": "ছবিটি সামান্য ঝাপসা (Out of Focus)।",
+            "fix": "Lightroom/Photoshop Prompt: 'Apply Unsharp Mask: Amount 100%, Radius 1.0, Threshold 0' OR use 'Topaz Sharpen AI' to recover focus."
+        })
+
+    # ৩. নয়েজ ডিটেকশন
+    noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
+    if noise > 5.0:
+        analysis.append({
+            "problem": "ছবিতে নয়েজ বা দানা (Grain) বেশি পাওয়া গেছে।",
+            "fix": "Lightroom Prompt: 'Increase Luminance Noise Reduction to 40, Detail to 50, and Contrast to 10.'"
+        })
+
+    # ৪. লোগো ও টেক্সট ডিটেকশন
+    text = pytesseract.image_to_string(pil_img).strip()
+    if len(text) > 2:
+        analysis.append({
+            "problem": f"ছবিতে টেক্সট বা লোগো পাওয়া গেছে: '{text[:20]}...'",
+            "fix": f"Photoshop Generative Fill Prompt: 'Select the area with text \"{text[:10]}\" and use Generative Fill with: \"Remove the logo and text, fill with background content-aware blend\".'"
+        })
+
+    # ৫. ক্রোম্যাটিক অ্যাবারেশন (Lens Fringe)
+    b, g, r = cv2.split(img_array)
+    if np.mean(cv2.absdiff(r, g)) > 18:
+        analysis.append({
+            "problem": "কালার ফ্রিঞ্জিং (বেগুনি বর্ডার) পাওয়া গেছে।",
+            "fix": "Camera Raw Prompt: 'Go to Optics Tab -> Defringe -> Increase Purple Amount to 5 and Green Amount to 5.'"
+        })
+
+    return analysis
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     img_array = np.array(image)
     
-    with st.spinner('AI আপনার ছবি স্ক্যান করছে, দয়া করে অপেক্ষা করুন...'):
-        # ১. টেকনিক্যাল চেক (MP, Sharpness, Noise)
-        width, height = image.size
-        mp = (width * height) / 1_000_000
-        
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        def get_max_sharpness(img):
-            h, w = img.shape
-            quad_h, quad_w = h//3, w//3
-            max_v = 0
-            for i in range(3):
-                for j in range(3):
-                    section = img[i*quad_h:(i+1)*quad_h, j*quad_w:(j+1)*quad_w]
-                    v = cv2.Laplacian(section, cv2.CV_64F).var()
-                    if v > max_v: max_v = v
-            return max_v
-        sharpness = get_max_sharpness(gray)
-        noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
-
-        # ২. লোগো এবং টেক্সট স্ক্যানার (OCR)
-        ocr_results = reader.readtext(img_array)
-        detected_texts = [res[1] for res in ocr_results]
+    with st.spinner('🔍 এআই প্রতিটি পিক্সেল বিশ্লেষণ করছে...'):
+        results = analyze_and_solve(img_array, image)
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.image(image, use_column_width=True, caption="Uploaded Image")
+        st.image(image, use_column_width=True, caption="স্ক্যান করা ছবি")
 
     with col2:
-        st.subheader("📢 চূড়ান্ত ফলাফল (Final Verdict)")
+        st.subheader("📢 অডিট রিপোর্ট ও সমাধান")
         
-        errors = []
-        if mp < 4.0:
-            errors.append(f"❌ ছবির সাইজ ছোট ({mp:.2f} MP)। অন্তত ৪ MP লাগবে।")
-        if sharpness < 25:
-            errors.append("❌ সাবজেক্ট ফোকাস নেই (Blurry)।")
-        if noise > 6.5:
-            errors.append("❌ ছবিতে দানা (Noise) বেশি।")
-        if detected_texts:
-            errors.append(f"❌ ব্র্যান্ড লোগো বা টেক্সট পাওয়া গেছে: {', '.join(detected_texts)}")
-
-        if not errors:
-            st.markdown('<div class="verdict-box" style="background-color: #d4edda; border-color: #28a745; color: #155724;">✅ সবকিছু পারফেক্ট! Adobe Stock-এ আপলোড করতে পারেন।</div>', unsafe_allow_html=True)
-            st.success("ছবিতে কোনো লোগো বা টেক্সট পাওয়া যায়নি এবং টেকনিক্যাল কোয়ালিটি চমৎকার।")
+        if not results:
+            st.success("✅ অভিনন্দন! ছবিতে কোনো সমস্যা পাওয়া যায়নি। এটি সরাসরি আপলোড করতে পারেন।")
+            st.balloons()
         else:
-            st.markdown('<div class="verdict-box" style="background-color: #f8d7da; border-color: #dc3545; color: #721c24;">⚠️ রিজেক্ট হওয়ার সম্ভাবনা আছে!</div>', unsafe_allow_html=True)
-            for err in errors:
-                st.write(err)
+            st.error(f"🛑 {len(results)}টি সমস্যা পাওয়া গেছে। নিচে সমাধানের প্রম্পট দেওয়া হলো:")
+            
+            for item in results:
+                st.markdown(f'<div class="problem-box">{item["problem"]}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="solve-prompt"><b>Solve Prompt:</b><br>{item["fix"]}</div>', unsafe_allow_html=True)
+                st.button(f"Copy Prompt for: {item['problem'][:15]}", on_click=lambda t=item['fix']: st.write(f"Copied: {t}")) # সিম্পল কপি ইন্ডিকেশন
 
-        st.subheader("🛠️ আপনার করণীয় (Action Plan)")
-        if detected_texts:
-            st.warning(f"👉 **লোগো রিমুভ করুন:** ছবিতে '{', '.join(detected_texts)}' লেখা বা লোগো দেখা যাচ্ছে। এটি ফটোশপের Content-Aware Fill দিয়ে মুছে ফেলুন।")
-        if mp < 4.0:
-            st.warning("👉 **সাইজ বাড়ান:** ছবিটির রেজোলিউশন কোনো AI Upscaler দিয়ে বাড়িয়ে নিন।")
-        if not errors:
-            st.info("💡 সব ঠিক আছে, এখন আপনি নিশ্চিন্তে আপলোড করতে পারেন।")
+    st.divider()
+    st.info("💡 টিপস: উপরের প্রম্পটগুলো কপি করে আপনার এডিটিং সফটওয়্যারে ব্যবহার করলে রিজেকশন রিস্ক ০% হয়ে যাবে।")

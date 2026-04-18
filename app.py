@@ -5,90 +5,77 @@ from PIL import Image
 from skimage.restoration import estimate_sigma
 
 # পেজ সেটআপ
-st.set_page_config(page_title="Adobe Stock Quality Pro", layout="wide", page_icon="📸")
+st.set_page_config(page_title="Adobe Stock Validator", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #f4f7f6; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .main { background-color: #ffffff; }
+    .status-box { padding: 20px; border-radius: 10px; margin-bottom: 20px; font-size: 20px; font-weight: bold; text-align: center; }
+    .solution-box { background-color: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🚀 Adobe Stock Contributor Validator")
-st.write("এই টুলটি Adobe Stock-এর অফিশিয়াল কোয়ালিটি স্ট্যান্ডার্ড অনুযায়ী আপনার ছবি চেক করবে।")
+st.title("🎯 Adobe Stock Acceptance Checker")
 
-uploaded_file = st.file_uploader("আপনার ছবিটি এখানে আপলোড করুন...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("আপনার ছবি এখানে দিন...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     img_array = np.array(image)
     
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.image(image, caption='Uploaded Image', use_column_width=True)
-        
-    with col2:
-        st.subheader("🔍 Technical Quality Report")
-        
-        # ১. মেগাপিক্সেল চেক (Adobe Rule: Min 4MP)
-        width, height = image.size
-        mp = (width * height) / 1_000_000
-        
-        if mp >= 4.0:
-            st.success(f"✅ Resolution: {mp:.2f} MP (Passed)")
-        else:
-            st.error(f"❌ Resolution: {mp:.2f} MP (Failed: Adobe requires at least 4MP)")
-
-        # ২. সাবজেক্ট শার্পনেস চেক (Smart Focus Detection)
-        # আমরা এখন পুরো ছবির গড় না দেখে, ছবির সবচেয়ে শার্প অংশটি খুঁজব।
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # ছবিকে ছোট ছোট গ্রিডে ভাগ করে শার্পনেস চেক করা (যাতে ব্যাকগ্রাউন্ড ব্লার থাকলেও সমস্যা না হয়)
-        def get_max_sharpness(img):
-            h, w = img.shape
-            quad_h, quad_w = h//3, w//3
-            max_v = 0
-            for i in range(3):
-                for j in range(3):
-                    section = img[i*quad_h:(i+1)*quad_h, j*quad_w:(j+1)*quad_w]
-                    v = cv2.Laplacian(section, cv2.CV_64F).var()
-                    if v > max_v: max_v = v
-            return max_v
-
-        sharpness_score = get_max_sharpness(gray)
-        
-        # Adobe Standard অনুযায়ী থ্রেশহোল্ড এডজাস্ট করা
-        if sharpness_score > 40: # ল্যাপ্লাসিয়ান ভ্যালু ৪০+ মানে সাবজেক্টে ফোকাস আছে
-            st.success(f"✅ Subject Focus: {sharpness_score:.2f} (Sharp & Focused)")
-        elif sharpness_score > 15:
-            st.warning(f"⚠️ Subject Focus: {sharpness_score:.2f} (Acceptable but soft)")
-        else:
-            st.error(f"❌ Subject Focus: {sharpness_score:.2f} (Too Blurry/Out of focus)")
-
-        # ৩. নয়েজ ডিটেকশন (Grain Check)
-        noise_sigma = estimate_sigma(img_array, channel_axis=-1)
-        avg_noise = np.mean(noise_sigma)
-        
-        if avg_noise < 4.0:
-            st.success(f"✅ Noise/Grain: {avg_noise:.2f} (Clean - Low Noise)")
-        elif avg_noise < 7.0:
-            st.warning(f"⚠️ Noise/Grain: {avg_noise:.2f} (Slight Noise - Might need Denoise)")
-        else:
-            st.error(f"❌ Noise/Grain: {avg_noise:.2f} (Too Noisy - High chance of rejection)")
-
-    # ৪. বাড়তি নির্দেশনা (Adobe-Specific Reminders)
-    st.divider()
-    st.subheader("💡 Adobe Stock Submission Tips:")
+    # ১. রেজোলিউশন চেক
+    width, height = image.size
+    mp = (width * height) / 1_000_000
     
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        st.info("**IP & Logos:** আপনার ছবিতে কি কোনো ব্র্যান্ড লোগো বা টেক্সট আছে? থাকলে সেটি রিজেক্ট হবে। এডিট করে মুছে ফেলুন।")
-    with t2:
-        st.info("**Chromatic Aberration:** ছবির ধারের দিকে বেগুনি বা সবুজ বর্ডার থাকলে সেটি সরিয়ে ফেলুন।")
-    with t3:
-        st.info("**Artifacts:** ছবি অতিরিক্ত এডিট করবেন না। পিক্সেল ফেটে গেলে (Banding) Adobe তা গ্রহণ করবে না।")
+    # ২. শার্পনেস চেক
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    def get_max_sharpness(img):
+        h, w = img.shape
+        quad_h, quad_w = h//3, w//3
+        max_v = 0
+        for i in range(3):
+            for j in range(3):
+                section = img[i*quad_h:(i+1)*quad_h, j*quad_w:(j+1)*quad_w]
+                v = cv2.Laplacian(section, cv2.CV_64F).var()
+                if v > max_v: max_v = v
+        return max_v
+    sharpness = get_max_sharpness(gray)
+    
+    # ৩. নয়েজ চেক
+    noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
 
-    if mp >= 4.0 and sharpness_score > 30 and avg_noise < 6:
-        st.balloons()
-        st.success("🌟 এই ছবিটি Adobe Stock-এর টেকনিক্যাল রিকোয়ারমেন্ট পূরণ করেছে! আপলোড করার জন্য ভালো ক্যান্ডিডেট।")
+    # --- সরাসরি সিদ্ধান্ত (Direct Verdict) ---
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.image(image, use_column_width=True)
+
+    with col2:
+        st.subheader("📢 চূড়ান্ত ফলাফল (Final Verdict)")
+        
+        errors = []
+        if mp < 4.0:
+            errors.append(f"❌ ছবির সাইজ ছোট। বর্তমানে {mp:.2f} MP আছে, কিন্তু Adobe-এ অন্তত ৪ MP লাগে।")
+        if sharpness < 25:
+            errors.append("❌ ছবির মেইন সাবজেক্ট ঝাপসা (Out of focus)।")
+        if noise > 6.5:
+            errors.append("❌ ছবিতে অনেক বেশি দানা (Noise/Grain) আছে।")
+
+        if not errors:
+            st.markdown('<div class="status-box" style="background-color: #d4edda; color: #155724;">✅ এই ছবিটি Adobe Stock-এ দেওয়ার জন্য ১০০% প্রস্তুত!</div>', unsafe_allow_html=True)
+            st.success("সবকিছু ঠিক আছে। আপনি নির্দ্বিধায় আপলোড করতে পারেন।")
+        else:
+            st.markdown('<div class="status-box" style="background-color: #f8d7da; color: #721c24;">⚠️ ছবিটি রিজেক্ট হওয়ার সম্ভাবনা আছে।</div>', unsafe_allow_html=True)
+            for err in errors:
+                st.write(err)
+
+        # --- সরাসরি সমাধান (Direct Solutions) ---
+        st.subheader("🛠️ কিভাবে সমাধান করবেন? (Direct Fix)")
+        if mp < 4.0:
+            st.warning(f"👉 **সমাধান ১:** কোনো AI Image Upscaler দিয়ে ছবিটির সাইজ অন্তত ২০০% বাড়িয়ে নিন।")
+        if sharpness < 25:
+            st.warning("👉 **সমাধান ২:** ফটোশপে গিয়ে 'Unsharp Mask' ব্যবহার করুন অথবা সাবজেক্টের শার্পনেস বাড়ান। যদি বেশি ঝাপসা হয় তবে এই ছবি বাদ দিন।")
+        if noise > 6.5:
+            st.warning("👉 **সমাধান ৩:** Lightroom বা ফটোশপে 'Noise Reduction' স্লাইডারটি ব্যবহার করে ছবির দানা কমিয়ে ফেলুন।")
+        
+        if not errors:
+            st.info("💡 আপলোডের আগে ছবিতে কোনো কোম্পানির লোগো বা মানুষের নাম থাকলে তা মুছে দিন।")

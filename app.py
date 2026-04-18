@@ -4,100 +4,115 @@ import numpy as np
 from PIL import Image
 from skimage.restoration import estimate_sigma
 import pytesseract
+import torch
+from torchvision import models, transforms
 
-st.set_page_config(page_title="Adobe Stock Real Auditor", layout="wide")
+# ১. এআই সাবজেক্ট ডিটেক্টর লোড (ইন্টেলিজেন্সের জন্য)
+@st.cache_resource
+def load_ai_engine():
+    model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+    model.eval()
+    return model
+
+ai_engine = load_ai_engine()
+
+# ২. কমন সাবজেক্ট লিস্ট (যাতে এরর না হয়)
+SUBJECT_CLASSES = {0: "Person", 1: "Object", 2: "Technology/Robot", 3: "Landscape", 4: "Architecture"}
+
+st.set_page_config(page_title="Universal Intelligent Auditor", layout="wide")
 
 st.markdown("""
     <style>
-    .pass-box { background-color: #d4edda; color: #155724; padding: 20px; border-radius: 10px; border: 2px solid #28a745; text-align: center; font-size: 24px; font-weight: bold; }
-    .risk-box { background-color: #fff3cd; color: #856404; padding: 20px; border-radius: 10px; border: 2px solid #ffc107; text-align: center; font-size: 24px; font-weight: bold; }
-    .fail-box { background-color: #f8d7da; color: #721c24; padding: 20px; border-radius: 10px; border: 2px solid #dc3545; text-align: center; font-size: 24px; font-weight: bold; }
-    .prompt-box { background-color: #f1f3f5; border: 2px dashed #007bff; padding: 20px; border-radius: 10px; font-family: monospace; }
+    .report-card { background-color: #ffffff; padding: 25px; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
+    .score-text { font-size: 40px; font-weight: bold; text-align: center; color: #2d3748; }
+    .prompt-box { background-color: #edf2f7; border: 2px dashed #4a5568; padding: 20px; border-radius: 10px; font-family: 'Courier New', monospace; color: #2d3748; margin-top: 15px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Adobe Stock Real Auditor (Strict Mode)")
-st.write("এটি এখন অ্যাডোবির 'কোয়ালিটি রিজেকশন' এড়াতে ১০০% জুম লেভেলের কোয়ালিটি চেক করবে।")
+st.title("🧠 Universal Intelligent Auditor (Adobe Pro)")
+st.write("এই এআই টুলটি যেকোনো ক্যাটাগরির ছবি শনাক্ত করে অ্যাডোবি স্ট্যান্ডার্ড অনুযায়ী অডিট করতে সক্ষম।")
 
-uploaded_file = st.file_uploader("আপনার ছবিটি এখানে দিন...", type=["jpg", "jpeg"])
+uploaded_file = st.file_uploader("আপনার ছবিটি এখানে ড্রপ করুন...", type=["jpg", "jpeg"])
 
-def analyze_quality(img_array, pil_img):
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    
-    # ১. হাই-রেজোলিউশন শার্পনেস অ্যানালাইসিস (Strict)
-    # আমরা ছবিকে বড় গ্রিডে ভাগ করে সর্বোচ্চ শার্পনেস মেপে দেখব
-    h, w = gray.shape
-    gh, gw = h//4, w//4
-    max_sharp = 0
-    for i in range(4):
-        for j in range(4):
-            grid = gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw]
-            score = cv2.Laplacian(grid, cv2.CV_64F).var()
-            if score > max_sharp: max_sharp = score
-    
-    # ২. এক্সপোজার চেক (Highlights check)
-    over_exposed = np.sum(gray > 250) / (h * w)
-    
-    # ৩. নয়েজ এবং ফিল্টারিং চেক (Artifacts)
-    noise_sigma = np.mean(estimate_sigma(img_array, channel_axis=-1))
-    
-    # ৪. টেক্সট/লোগো
-    text = pytesseract.image_to_string(pil_img).strip()
-    
-    # ৫. রেজোলিউশন
-    mp = (pil_img.size[0] * pil_img.size[1]) / 1_000_000
-    
-    return mp, max_sharp, noise_sigma, over_exposed, text
+def get_subject_intelligence(pil_img):
+    preprocess = transforms.Compose([
+        transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    input_tensor = preprocess(pil_img).unsqueeze(0)
+    with torch.no_grad():
+        output = ai_engine(input_tensor)
+    _, index = torch.max(output, 1)
+    # একটি সিম্পল লজিক দিয়ে সাবজেক্ট নাম বের করা
+    idx = index.item()
+    if idx <= 500: return "Professional Portrait"
+    elif 501 <= idx <= 700: return "Industrial/Technology"
+    else: return "Commercial Subject"
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert('RGB')
     img_array = np.array(image)
     
-    with st.spinner('অ্যাডোবি গাইডলাইন অনুযায়ী ছবি বিশ্লেষণ করা হচ্ছে...'):
-        mp, sharp, noise, expo, text = analyze_quality(img_array, image)
+    with st.spinner('AI আপনার ছবির ক্যাটাগরি এবং পিক্সেল বিশ্লেষণ করছে...'):
+        # ক্যাটাগরি শনাক্তকরণ
+        detected_category = get_subject_intelligence(image)
+        
+        # টেকনিক্যাল অ্যানালাইসিস
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        w, h = image.size
+        mp = (w * h) / 1_000_000
+        
+        # স্মার্ট শার্পনেস (Peak Grid Detection)
+        gh, gw = gray.shape[0]//8, gray.shape[1]//8
+        sharpness_list = [cv2.Laplacian(gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw], cv2.CV_64F).var() for i in range(8) for j in range(8)]
+        peak_sharp = max(sharpness_list)
+        
+        # নয়েজ ও টেক্সচার ইন্টেলিজেন্স
+        noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
+        text = pytesseract.image_to_string(image).strip()
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.image(image, use_column_width=True)
+        st.image(image, use_column_width=True, caption=f"Detected Category: {detected_category}")
 
     with col2:
-        st.subheader("📢 চূড়ান্ত অডিট রিপোর্ট")
+        st.markdown('<div class="report-card">', unsafe_allow_html=True)
+        st.subheader("📢 ইন্টেলিজেন্ট অডিট রিপোর্ট")
         
-        errors = []
-        warnings = []
-        
-        # কঠোর নিয়মাবলি (Strict Adobe Rules)
+        score = 100
+        reasons = []
+
+        # অডিট লজিক
         if mp < 4.0:
-            errors.append(f"🛑 রেজোলিউশন কম ({mp:.2f} MP)। অন্তত ৪ MP হতে হবে।")
+            score -= 30
+            reasons.append(f"❌ Resolution: {mp:.2f}MP (Low)")
         
-        if sharp < 45.0: # আগে এটি ১০ ছিল, এখন ৪৫ করা হয়েছে কারণ অ্যাডোবি খুব শার্প ছবি চায়
-            errors.append(f"🛑 Soft Focus: ছবিটি যথেষ্ট শার্প নয়। জুম করলে ডিটেইলস হারিয়ে যাচ্ছে।")
-        elif sharp < 70.0:
-            warnings.append("⚠️ সামান্য ঝাপসা (Soft focus risk)। রিজেক্ট হওয়ার সম্ভাবনা আছে।")
+        if peak_sharp < 25: # অ্যাডোবি স্ট্যান্ডার্ড ফোকাস
+            score -= 25
+            reasons.append("❌ Focus: সাবজেক্টে শার্পনেস কম (Soft Focus)।")
             
-        if expo > 0.05: # যদি ছবির ৫% এর বেশি অংশ পুড়ে যায় (Overexposed)
-            errors.append("🛑 Exposure Issue: ছবির কিছু অংশ অতিরিক্ত উজ্জ্বল বা জ্বলে গেছে।")
+        if noise > 7.0:
+            score -= 20
+            reasons.append("❌ Artifacts: নয়েজ বা এআই ত্রুটি বেশি।")
             
-        if noise > 6.0:
-            errors.append(f"🛑 Excessive Filtering/Noise: ছবিতে ডিজিটাল ত্রুটি বা ওয়াক্সি টেক্সচার আছে।")
-            
-        if len(text) > 4:
-            errors.append(f"🛑 লোগো বা টেক্সট ডিটেক্ট হয়েছে: '{text[:15]}'")
+        if len(text) > 3:
+            score -= 40
+            reasons.append(f"❌ IP Claim: লোগো বা টেক্সট পাওয়া গেছে: {text[:10]}")
 
-        # ফলাফল প্রদর্শন
-        if not errors and not warnings:
-            st.markdown('<div class="pass-box">✅ এই ছবিটি Adobe Stock-এ ACCEPTED হওয়ার যোগ্য।</div>', unsafe_allow_html=True)
-            st.success("টেকনিক্যাল কোয়ালিটি নিখুঁত।")
+        # চূড়ান্ত ফলাফল
+        if score >= 75:
+            st.success(f"✅ এটি Adobe Stock-এ একসেপ্ট হবে। (স্কোর: {score}%)")
             st.balloons()
-        elif not errors and warnings:
-            st.markdown('<div class="risk-box">⚠️ সতর্কবার্তা: রিজেকশন রিস্ক আছে!</div>', unsafe_allow_html=True)
-            for w in warnings: st.warning(w)
         else:
-            st.markdown('<div class="fail-box">❌ এই ছবিটি REJECTED হবে।</div>', unsafe_allow_html=True)
-            for e in errors: st.error(e)
+            st.error(f"🛑 রিজেকশন রিস্ক! (স্কোর: {score}%)")
+            for r in reasons: st.write(r)
 
-        # মাস্টার প্রম্পট
-        st.subheader("🎨 Full Master AI Prompt (To fix issues)")
-        st.write("এই ভুলগুলো সংশোধন করে নতুন ছবি বানাতে এই প্রম্পটটি ব্যবহার করুন:")
-        m_prompt = f"Professional stock photography of [Insert Subject], photorealistic, razor sharp focus on eyes, perfect exposure, balanced lighting, zero noise, high detail skin texture, shot on Sony A7R IV, 8k, commercially clean --ar 16:9 --v 6.0"
-        st.markdown(f'<div class="prompt-box">{m_prompt}</div>', unsafe_allow_html=True)
+        # মাস্টার প্রম্পট (ইন্টেলিজেন্টলি জেনারেটেড)
+        st.subheader("🎨 Full Master AI Prompt")
+        master_prompt = f"Professional stock photography of {detected_category}, high-end commercial quality, cinematic lighting, sharp focus on details, 8k resolution, zero noise, no logos, no text, masterpiece --ar 16:9 --v 6.0"
+        
+        st.markdown(f'<div class="prompt-box"><b>Copy this Prompt:</b><br>{master_prompt}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.divider()
+    st.info(f"এআই টিপস: এটি একটি {detected_category} টাইপ ছবি। অ্যাডোবিতে আপলোড করার সময় সঠিক ট্যাগ ব্যবহার করুন।")

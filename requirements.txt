@@ -1,9 +1,9 @@
+torch
+torchvision
+requests
 streamlit
 opencv-python-headless
 numpy
 Pillow
 scikit-image
 pytesseract
-scipy
-torch
-torchvision

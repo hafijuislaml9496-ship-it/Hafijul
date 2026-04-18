@@ -6,19 +6,24 @@ from skimage.restoration import estimate_sigma
 import pytesseract
 import torch
 from torchvision import models, transforms
+import requests
 
-# ১. এআই মডেল লোড (সাবজেক্ট চেনার জন্য)
+# ১. এআই মডেল এবং ১০০০টি বস্তুর নামের লিস্ট (Labels) লোড করা
 @st.cache_resource
-def load_model():
+def load_ai_expert():
+    # সাবজেক্ট চেনার মডেল
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
     model.eval()
-    return model
+    
+    # ১০০০টি বস্তুর নাম (ImageNet Labels)
+    LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json"
+    labels = requests.get(LABELS_URL).json()
+    return model, labels
 
-classifier = load_model()
+classifier, labels = load_ai_expert()
 
-# ২. ডাইনামিক প্রম্পট ফাংশন
-def generate_custom_prompt(image, score, logs):
-    # সাবজেক্ট ডিটেকশন
+# ২. ইউনিক প্রম্পট তৈরির ফাংশন (ছবির আসল সাবজেক্ট দিয়ে)
+def get_unique_prompt(image, logs):
     preprocess = transforms.Compose([
         transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -28,21 +33,17 @@ def generate_custom_prompt(image, score, logs):
         output = classifier(input_tensor)
     _, index = torch.max(output, 1)
     
-    # সিম্পল সাবজেক্ট আইডেন্টিফায়ার (এখানে জাস্ট ডিফল্ট কিছু ক্যাটাগরি)
-    subj = "High-quality subject"
-    if index.item() < 400: subj = "Professional Portrait"
-    elif 400 <= index.item() < 600: subj = "Commercial Object"
-    else: subj = "Scenic Landscape/Architecture"
-
-    # কোয়ালিটি অনুযায়ী প্রম্পট টিউনিং
-    quality_tags = "razor sharp focus, 8k resolution, masterpiece, cinematic lighting"
-    if "❌ Soft Focus" in str(logs): quality_tags += ", extra detailed textures, extreme clarity"
-    if "❌ High Noise" in str(logs): quality_tags += ", zero noise, clean ISO"
+    # ছবির আসল সাবজেক্টের নাম বের করা
+    detected_name = labels[str(index.item())][1].replace('_', ' ')
     
-    prompt = f"Professional stock photography of {subj}, {quality_tags}, photorealistic, no text, no logo, commercially ready, shot on Sony A7R IV --ar 16:9 --v 6.0"
-    return prompt
+    # প্রম্পট সাজানো
+    quality_tags = "razor sharp focus, highly detailed, 8k resolution, cinematic lighting"
+    if "❌ Soft Focus" in str(logs): quality_tags += ", extreme clarity, macro details"
+    
+    final_prompt = f"Professional stock photography of {detected_name.title()}, {quality_tags}, photorealistic masterpiece, clean background, no text, no logo, commercially ready, shot on Sony A7R IV --ar 16:9 --v 6.0"
+    return final_prompt, detected_name
 
-# ৩. অডিট লজিক
+# ৩. টেকনিক্যাল অডিট লজিক (Strict Mode)
 def deep_audit(img_array, pil_img):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
@@ -68,44 +69,44 @@ def deep_audit(img_array, pil_img):
         logs.append("❌ Logo/Text Detected")
     return score, logs
 
-# ৪. মেইন অ্যাপ ইন্টারফেস
-st.set_page_config(page_title="Bulk AI Stock Auditor", layout="wide")
+# ৪. ইন্টারফেস ডিজাইন
+st.set_page_config(page_title="Bulk Smart Auditor", layout="wide")
 st.markdown("""
     <style>
-    .status-pass { color: #155724; background-color: #d4edda; padding: 5px 12px; border-radius: 20px; font-weight: bold; }
-    .status-risk { color: #856404; background-color: #fff3cd; padding: 5px 12px; border-radius: 20px; font-weight: bold; }
-    .status-fail { color: #721c24; background-color: #f8d7da; padding: 5px 12px; border-radius: 20px; font-weight: bold; }
+    .status-pass { color: #155724; background-color: #d4edda; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 12px; }
+    .status-risk { color: #856404; background-color: #fff3cd; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 12px; }
+    .status-fail { color: #721c24; background-color: #f8d7da; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 12px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Bulk Adobe Stock Auditor (Intelligent Mode)")
-uploaded_files = st.file_uploader("আপনার ছবিগুলো আপলোড করুন...", type=["jpg", "jpeg"], accept_multiple_files=True)
+st.title("🛡️ Bulk Adobe Stock Smart Auditor")
+uploaded_files = st.file_uploader("ছবিগুলো আপলোড করুন...", type=["jpg", "jpeg"], accept_multiple_files=True)
 
 if uploaded_files:
-    progress_bar = st.progress(0)
-    for idx, uploaded_file in enumerate(uploaded_files):
+    for uploaded_file in uploaded_files:
         image = Image.open(uploaded_file).convert('RGB')
         img_array = np.array(image)
+        
+        # অডিট এবং ইউনিক প্রম্পট জেনারেশন
         score, logs = deep_audit(img_array, image)
-        unique_prompt = generate_custom_prompt(image, score, logs)
+        unique_prompt, subject_name = get_unique_prompt(image, logs)
         
         col1, col2, col3, col4 = st.columns([1, 3, 1.5, 1])
         with col1:
             thumb = image.copy()
-            thumb.thumbnail((100, 100))
+            thumb.thumbnail((120, 120))
             st.image(thumb)
         with col2:
             st.write(f"**{uploaded_file.name}**")
-            st.caption(", ".join(logs) if logs else "টেকনিক্যাল কোয়ালিটি পারফেক্ট")
+            st.caption(f"Detected Subject: {subject_name.title()}")
+            st.write(", ".join(logs) if logs else "✅ টেকনিক্যাল কোয়ালিটি পারফেক্ট")
         with col3:
-            if score >= 85: st.markdown('<span class="status-pass">✅ ACCEPTED</span>', unsafe_allow_html=True)
-            elif score >= 55: st.markdown('<span class="status-risk">⚠️ RISKY</span>', unsafe_allow_html=True)
-            else: st.markdown('<span class="status-fail">🛑 REJECTED</span>', unsafe_allow_html=True)
+            if score >= 85: st.markdown('<span class="status-pass">ACCEPTED</span>', unsafe_allow_html=True)
+            elif score >= 55: st.markdown('<span class="status-risk">RISKY</span>', unsafe_allow_html=True)
+            else: st.markdown('<span class="status-fail">REJECTED</span>', unsafe_allow_html=True)
             st.write(f"Score: **{score}%**")
         with col4:
             with st.popover("AI Prompt"):
-                st.write("**Unique Master Prompt:**")
-                st.code(unique_prompt, language="text") # st.code এ অটোমেটিক কপি বাটন থাকে
+                st.write(f"**Unique Prompt for {subject_name.title()}:**")
+                st.code(unique_prompt, language="text")
         st.divider()
-        progress_bar.progress((idx + 1) / len(uploaded_files))
-    st.success("অডিট সম্পন্ন হয়েছে!")

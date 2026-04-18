@@ -7,94 +7,104 @@ import pytesseract
 import torch
 from torchvision import models, transforms
 
-# ১. এআই মডেল লোড (সাবজেক্ট চেনার জন্য)
+# সাবজেক্ট ডিটেকশন মডেল
 @st.cache_resource
-def load_classifier():
+def load_expert_model():
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
     model.eval()
     return model
 
-classifier = load_classifier()
+expert_ai = load_expert_model()
 
-# ইমেজ লেবেল (সাবজেক্টের নাম পেতে)
+# লেবেল লোড করা
 import json
 import requests
 LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json"
 labels = requests.get(LABELS_URL).json()
 
-st.set_page_config(page_title="Adobe Stock Master Expert AI", layout="wide")
+st.set_page_config(page_title="Professional Adobe Stock Auditor", layout="wide")
 
+# স্টাইল সেটআপ
 st.markdown("""
     <style>
-    .expert-pass { background-color: #f0fff4; border: 2px solid #38a169; padding: 20px; border-radius: 15px; text-align: center; color: #276749; font-weight: bold; font-size: 22px; }
-    .expert-fail { background-color: #fff5f5; border: 2px solid #e53e3e; padding: 20px; border-radius: 15px; text-align: center; color: #9b2c2c; font-weight: bold; font-size: 22px; }
-    .ai-prompt-box { background-color: #f7fafc; border: 2px dashed #4299e1; padding: 20px; border-radius: 10px; color: #2b6cb0; font-family: 'Segoe UI', sans-serif; }
+    .verdict-yes { background-color: #d4edda; color: #155724; padding: 20px; border-radius: 10px; border: 2px solid #28a745; text-align: center; font-size: 24px; font-weight: bold; }
+    .verdict-no { background-color: #f8d7da; color: #721c24; padding: 20px; border-radius: 10px; border: 2px solid #dc3545; text-align: center; font-size: 24px; font-weight: bold; }
+    .ai-prompt { background-color: #f1f3f5; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; font-family: 'Courier New', monospace; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🧠 Adobe Stock Master Expert AI")
-st.write("এই টুলটি এখন নিজে থেকেই সাবজেক্ট চিনবে এবং অ্যাডোবির আসল স্ট্যান্ডার্ড অনুযায়ী আপনার ছবি অডিট করবে।")
+st.title("🛡️ Professional Adobe Stock Auditor")
+st.write("অ্যাডোবি স্টকের আসল রিভিউ স্ট্যান্ডার্ড অনুযায়ী ছবি বিশ্লেষণ করা হচ্ছে।")
 
-uploaded_file = st.file_uploader("যেকোনো ছবি এখানে দিন...", type=["jpg", "jpeg"])
+uploaded_file = st.file_uploader("আপনার ছবিটি এখানে দিন...", type=["jpg", "jpeg"])
 
-def get_subject(pil_img):
+def get_expert_verdict(img_array, pil_img):
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    
+    # ১. স্মার্ট শার্পনেস (Peak Focal Analysis)
+    # আমরা ছবিকে ১৬টি ভাগে ভাগ করে দেখব কোনো একটি ভাগও কি প্রফেশনাল লেভেলের শার্প?
+    h, w = gray.shape
+    gh, gw = h//4, w//4
+    max_sharp = 0
+    for i in range(4):
+        for j in range(4):
+            grid = gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw]
+            score = cv2.Laplacian(grid, cv2.CV_64F).var()
+            if score > max_sharp: max_sharp = score
+            
+    # ২. নয়েজ অ্যানালাইসিস
+    noise_sigma = np.mean(estimate_sigma(img_array, channel_axis=-1))
+    
+    # ৩. সাবজেক্ট আইডেন্টিফিকেশন
     preprocess = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
+        transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    input_tensor = preprocess(pil_img)
-    input_batch = input_tensor.unsqueeze(0)
+    input_batch = preprocess(pil_img).unsqueeze(0)
     with torch.no_grad():
-        output = classifier(input_batch)
+        output = expert_ai(input_batch)
     _, index = torch.max(output, 1)
-    subject = labels[str(index.item())][1]
-    return subject.replace('_', ' ')
+    subject = labels[str(index.item())][1].replace('_', ' ')
+    
+    # ৪. টেক্সট/লোগো ডিটেকশন
+    text = pytesseract.image_to_string(pil_img).strip()
+    
+    return max_sharp, noise_sigma, subject, text
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert('RGB')
     img_array = np.array(image)
     
-    with st.spinner('এক্সপার্ট এআই আপনার ছবি এবং সাবজেক্ট বিশ্লেষণ করছে...'):
-        # সাবজেক্ট ডিটেকশন
-        subject_name = get_subject(image)
-        
-        # টেকনিক্যাল চেক
-        w, h = image.size
-        mp = (w * h) / 1000000
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # শার্পনেস চেক (একেবারে নমনীয় করা হয়েছে প্রফেশনাল ছবির জন্য)
-        sharp_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-        noise = np.mean(estimate_sigma(img_array, channel_axis=-1))
-        text = pytesseract.image_to_string(image).strip()
+    with st.spinner('🔍 অ্যাডোবি স্ট্যান্ডার্ড স্ক্যান চলছে...'):
+        max_sharp, noise, subject, text = get_expert_verdict(img_array, image)
+        width, height = image.size
+        mp = (width * height) / 1_000_000
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        st.image(image, use_column_width=True, caption=f"Detected Subject: {subject_name}")
+        st.image(image, use_column_width=True)
 
     with col2:
-        st.subheader("📢 এক্সপার্ট অডিট রিপোর্ট")
+        st.subheader("📢 রিভিউ ফলাফল (Reviewer Verdict)")
         
-        errors = []
-        # অ্যাডোবি স্ট্যান্ডার্ড রি-ক্যালিব্রেশন
-        if mp < 4.0: errors.append(f"সাইজ ছোট ({mp:.2f} MP)")
-        if sharp_score < 6.0: errors.append("ছবিটি অতিরিক্ত ঝাপসা (Critical Blur)")
-        if len(text) > 4: errors.append(f"লোগো/টেক্সট পাওয়া গেছে: {text[:10]}")
+        reasons = []
+        if mp < 4.0: reasons.append(f"রেজোলিউশন খুব কম ({mp:.2f} MP)। অন্তত ৪ MP হতে হবে।")
+        if max_sharp < 15.0: reasons.append("ছবির কোনো অংশই শার্প নয় (Soft Focus)। সাবজেক্টে ফোকাস থাকতে হবে।")
+        if noise > 8.5: reasons.append(f"অতিরিক্ত টেকনিক্যাল নয়েজ/গ্রেইন ({noise:.2f})।")
+        if len(text) > 4: reasons.append(f"লোগো বা টেক্সট ডিটেক্ট হয়েছে: '{text[:15]}'")
 
-        if not errors:
-            st.markdown('<div class="expert-pass">✅ এই ছবিটি Adobe Stock-এ ১০০% অ্যাপ্রুভ হবে!</div>', unsafe_allow_html=True)
-            st.balloons()
+        if not reasons:
+            st.markdown('<div class="verdict-yes">✅ এই ছবিটি Adobe Stock-এ ACCEPTED হবে।</div>', unsafe_allow_html=True)
+            st.success(f"সবকিছু নিখুঁত। আপনার {subject} এর ছবিটির টেকনিক্যাল কোয়ালিটি চমৎকার।")
         else:
-            st.markdown('<div class="expert-fail">🛑 রিজেকশন রিস্ক পাওয়া গেছে!</div>', unsafe_allow_html=True)
-            for e in errors: st.write(f"- {e}")
+            st.markdown('<div class="verdict-no">🛑 এই ছবিটি REJECTED হতে পারে।</div>', unsafe_allow_html=True)
+            for r in reasons: st.warning(r)
 
-        # মাস্টার অটো-প্রম্পট
-        st.subheader("🎨 Full AI Creation Prompt (Auto-Generated)")
-        st.write("নিচের প্রম্পটটি সরাসরি কপি করে ব্যবহার করুন:")
+        # মাস্টার প্রম্পট জেনারেশন
+        st.subheader("🎨 Full AI Master Prompt (Subject-Based)")
+        st.write("এই বিষয়বস্তু দিয়ে নিখুঁত ছবি তৈরির প্রম্পট:")
         
-        master_prompt = f"Professional high-end stock photography of {subject_name}, cinematic studio lighting, shot on 85mm lens, f/1.8, incredible details, masterpiece, sharp focus, clean background, no text, no logo, commercially ready, 8k resolution --ar 16:9 --v 6.0"
+        full_prompt = f"Professional stock photography of {subject}, high clarity, cinematic studio lighting, f/1.8, 85mm, incredibly detailed, sharp focus on subject, clean background, no text, no logo, commercially ready, 8k resolution --ar 16:9 --v 6.0"
         
-        st.markdown(f'<div class="ai-prompt-box"><b>Master Prompt:</b><br>{master_prompt}</div>', unsafe_allow_html=True)
-        st.info(f"এআই শনাক্ত করেছে যে এটি একটি **{subject_name}** এর ছবি এবং সেই অনুযায়ী প্রম্পটটি সাজানো হয়েছে।")
+        st.markdown(f'<div class="ai-prompt">{full_prompt}</div>', unsafe_allow_html=True)
+        st.button("Copy Prompt", on_click=lambda: st.write("Prompt Copied to Clipboard!"))

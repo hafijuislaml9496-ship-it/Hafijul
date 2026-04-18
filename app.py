@@ -1,6 +1,6 @@
 """
-Adobe Stock 100% Guarantee Simulator
-এখানে পাস করলে Adobe approve করবেই (প্রায় নিশ্চিত)
+Adobe Stock Auditor with Individual Master Prompts
+প্রতিটি রিজেক্টেড ইমেজের জন্য আলাদা AI Prompt জেনারেট করে
 """
 
 import streamlit as st
@@ -13,37 +13,22 @@ import base64
 import tempfile
 import os
 import shutil
+import re
 from datetime import datetime
 
 st.set_page_config(
-    page_title="100% Adobe Stock Guarantee Checker",
-    page_icon="✅",
+    page_title="Adobe Stock Pro Auditor",
+    page_icon="🎨",
     layout="wide"
 )
 
 # Custom CSS
 st.markdown("""
 <style>
-    .guarantee-pass {
-        background: linear-gradient(135deg, #00b09b, #96c93d);
-        padding: 20px;
-        border-radius: 15px;
-        text-align: center;
-        color: white;
-        font-weight: bold;
-    }
-    .guarantee-fail {
-        background: linear-gradient(135deg, #cb2d3e, #ef473a);
-        padding: 20px;
-        border-radius: 15px;
-        text-align: center;
-        color: white;
-        font-weight: bold;
-    }
     .status-pass {
         background-color: #00ff9d;
         color: #000;
-        padding: 5px 15px;
+        padding: 4px 12px;
         border-radius: 20px;
         font-weight: bold;
         display: inline-block;
@@ -51,45 +36,57 @@ st.markdown("""
     .status-fail {
         background-color: #ff4444;
         color: #fff;
-        padding: 5px 15px;
+        padding: 4px 12px;
         border-radius: 20px;
         font-weight: bold;
         display: inline-block;
     }
+    .status-risky {
+        background-color: #ffb443;
+        color: #000;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: bold;
+        display: inline-block;
+    }
+    .prompt-card {
+        background-color: #1e1e2e;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        border: 1px solid #ff4b4b;
+    }
+    .copy-btn {
+        background-color: #ff4b4b;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 5px;
+        cursor: pointer;
+        margin-top: 10px;
+    }
+    .copy-btn:hover {
+        background-color: #ff6b6b;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-class AdobeStock100PercentGuarantee:
-    """
-    EXTREME STRICT - Adobe-র চেয়েও কঠোর
-    এখানে পাস করলে Adobe 100% approve করবে
-    """
-    
-    # Adobe-র official limit-এর চেয়েও strict (buffer রাখা)
-    MIN_MEGAPIXELS = 4.5  # Adobe says 4.0, আমরা রাখলাম 4.5
-    MIN_WIDTH = 2500      # Adobe says 1920, আমরা রাখলাম 2500
-    MIN_HEIGHT = 2000     # 4:3 aspect ratio জন্য
-    
-    # Sharpness - অফিসিয়াল limit জানা নেই, তাই extreme strict
-    LAPLACIAN_MINIMUM = 80   # যেকোনো blurry reject
-    LAPLACIAN_BEST = 120     # best practice
-    
-    # Noise limit
-    MAX_NOISE = 8.0
-    
-    # Artifact detection
-    MIN_ENTROPY = 4.0
+class AdobeStockAuditorWithPrompts:
+    """প্রতিটি ইমেজের জন্য আলাদা প্রম্পট জেনারেট করবে"""
     
     def __init__(self, image_path):
         self.image_path = image_path
         self.image = None
         self.gray = None
         self.results = {
-            'adobe_guarantee': False,
-            'confidence': 0,
+            'status': 'PENDING',
+            'score': 0,
             'errors': [],
+            'warnings': [],
             'metrics': {},
-            'verdict': 'FAIL'
+            'master_prompt': None,
+            'fix_instructions': [],
+            'recreation_prompt': None
         }
         
     def load_image(self):
@@ -98,315 +95,163 @@ class AdobeStock100PercentGuarantee:
             if self.image is None:
                 raise ValueError("Cannot load image")
             self.gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+            self.h, self.w = self.image.shape[:2]
             return True
         except Exception as e:
             self.results['errors'].append(f"Load error: {str(e)}")
             return False
     
-    def check_resolution_guarantee(self):
-        """Resolution check - Adobe-র চেয়ে strict"""
-        h, w = self.image.shape[:2]
-        megapixels = (w * h) / 1_000_000
+    def analyze_image_deep(self):
+        """ডিপ এনালাইসিস - কি কি সমস্যা আছে সেটা বের করে"""
+        issues = []
         
+        # 1. Resolution check
+        megapixels = (self.w * self.h) / 1_000_000
         self.results['metrics']['megapixels'] = round(megapixels, 2)
-        self.results['metrics']['dimensions'] = f"{w}x{h}"
+        if megapixels < 4.0:
+            issues.append('low_resolution')
+            self.results['errors'].append(f"Low resolution: {megapixels}MP")
         
-        # Main check
-        if megapixels < self.MIN_MEGAPIXELS:
-            self.results['errors'].append(f"❌ Resolution {megapixels}MP < {self.MIN_MEGAPIXELS}MP (Adobe requires 4MP, we need buffer)")
-            return False
-        elif w < self.MIN_WIDTH or h < self.MIN_HEIGHT:
-            self.results['errors'].append(f"❌ Dimensions {w}x{h} too small (Min recommended: {self.MIN_WIDTH}x{self.MIN_HEIGHT})")
-            return False
-        
-        # Bonus for high res
-        if megapixels >= 12:
-            self.results['metrics']['resolution_bonus'] = "+10%"
-        return True
-    
-    def check_sharpness_guarantee(self):
-        """Extreme sharpness check - zero tolerance for blur"""
-        # Laplacian variance
+        # 2. Sharpness check
         laplacian = cv2.Laplacian(self.gray, cv2.CV_64F)
         sharpness = laplacian.var()
+        self.results['metrics']['sharpness'] = round(sharpness, 2)
+        if sharpness < 50:
+            issues.append('blurry')
+            self.results['errors'].append(f"Blurry image: {sharpness:.1f}")
+        elif sharpness < 80:
+            issues.append('soft_focus')
+            self.results['warnings'].append(f"Soft focus: {sharpness:.1f}")
         
-        # Sobel edge detection
-        sobelx = cv2.Sobel(self.gray, cv2.CV_64F, 1, 0)
-        sobely = cv2.Sobel(self.gray, cv2.CV_64F, 0, 1)
-        edge_density = np.mean(np.sqrt(sobelx**2 + sobely**2))
-        
-        self.results['metrics']['sharpness_score'] = round(sharpness, 2)
-        self.results['metrics']['edge_density'] = round(edge_density, 2)
-        
-        # Extreme strict check
-        if sharpness < self.LAPLACIAN_MINIMUM:
-            self.results['errors'].append(f"❌ Image is BLURRY! Sharpness={sharpness:.1f} (Need > {self.LAPLACIAN_MINIMUM})")
-            return False
-        
-        if sharpness < self.LAPLACIAN_BEST:
-            self.results['errors'].append(f"❌ Sharpness {sharpness:.1f} is risky - Adobe may reject")
-            return False
-        
-        return True
-    
-    def check_noise_guarantee(self):
-        """Noise check - professional stock photo level"""
-        # Calculate noise
+        # 3. Noise check
         blur = cv2.GaussianBlur(self.gray, (5, 5), 0)
         noise = np.mean(np.abs(self.gray.astype(float) - blur.astype(float)))
+        self.results['metrics']['noise'] = round(noise, 2)
+        if noise > 8:
+            issues.append('noisy')
+            self.results['errors'].append(f"Too noisy: {noise:.1f}")
         
-        self.results['metrics']['noise_level'] = round(noise, 2)
+        # 4. Lighting check
+        mean_brightness = np.mean(self.gray)
+        self.results['metrics']['brightness'] = round(mean_brightness, 2)
+        if mean_brightness < 80:
+            issues.append('underexposed')
+            self.results['errors'].append("Too dark (underexposed)")
+        elif mean_brightness > 200:
+            issues.append('overexposed')
+            self.results['errors'].append("Too bright (overexposed)")
         
-        if noise > self.MAX_NOISE:
-            self.results['errors'].append(f"❌ Too much NOISE: {noise:.1f} (Max allowed: {self.MAX_NOISE})")
-            return False
+        # 5. Aspect ratio check
+        ratio = self.w / self.h
+        self.results['metrics']['aspect_ratio'] = round(ratio, 2)
+        if not (1.2 < ratio < 1.9):
+            issues.append('bad_aspect_ratio')
+            self.results['warnings'].append(f"Unusual aspect ratio: {ratio:.2f}")
         
-        if noise > 5:
-            self.results['errors'].append(f"❌ Visible noise/grain: {noise:.1f} - Adobe rejects noisy images")
-            return False
-        
-        return True
-    
-    def check_compression_artifacts(self):
-        """JPEG compression artifacts"""
-        # Re-compress and compare
-        _, high_quality = cv2.imencode('.jpg', self.image, [cv2.IMWRITE_JPEG_QUALITY, 100])
-        _, low_quality = cv2.imencode('.jpg', self.image, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        
-        diff = abs(len(high_quality) - len(low_quality))
-        compression_ratio = len(low_quality) / len(high_quality)
-        
-        if compression_ratio < 0.7:  # Too much compression
-            self.results['errors'].append("❌ High JPEG compression artifacts detected")
-            return False
-        
-        return True
-    
-    def check_waxy_skin_guarantee(self):
-        """Over-smoothing detection (common in AI images)"""
+        # 6. Texture/Artifact check
         from skimage.filters.rank import entropy
         from skimage.morphology import disk
-        
-        # Entropy check
         try:
-            entropy_img = entropy(self.gray, disk(5))
-            avg_entropy = np.mean(entropy_img)
-            self.results['metrics']['texture_entropy'] = round(avg_entropy, 2)
-            
-            if avg_entropy < self.MIN_ENTROPY:
-                self.results['errors'].append(f"❌ WAXY/PLASTIC skin texture detected (Entropy: {avg_entropy:.2f})")
-                return False
+            entropy_img = entropy(self.gray, disk(3))
+            texture = np.mean(entropy_img)
+            self.results['metrics']['texture'] = round(texture, 2)
+            if texture < 3.0:
+                issues.append('waxy')
+                self.results['errors'].append("Waxy/plastic texture detected")
         except:
             pass
         
-        # Gradient check for unnatural smoothing
-        grad_x = cv2.Sobel(self.gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(self.gray, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
-        
-        if np.std(gradient_magnitude) < 15:
-            self.results['errors'].append("❌ Over-smoothed image (looks artificial)")
-            return False
-        
-        return True
+        self.results['issues'] = issues
+        return issues
     
-    def check_logos_guarantee(self):
-        """Logo detection - strict"""
-        h, w = self.gray.shape
+    def extract_subject_and_scene(self):
+        """ফাইলনেম থেকে সাবজেক্ট এবং সীন বের করে"""
+        filename = os.path.basename(self.image_path)
+        name = os.path.splitext(filename)[0]
+        name_clean = re.sub(r'[_-]+', ' ', name).lower()
         
-        # Check corners for watermarks
-        corners = [
-            self.gray[0:100, 0:100],
-            self.gray[0:100, -100:],
-            self.gray[-100:, 0:100],
-            self.gray[-100:, -100:]
-        ]
+        # Subject mapping
+        subjects = {
+            'doctor': 'medical professional', 'nurse': 'healthcare worker',
+            'patient': 'patient', 'business': 'business professional',
+            'woman': 'woman', 'man': 'man', 'person': 'person',
+            'tablet': 'person using tablet', 'laptop': 'person using laptop',
+            'phone': 'person using smartphone', 'office': 'office worker',
+            'medical': 'medical scene', 'healthcare': 'healthcare scene',
+            'hand': 'hands', 'portrait': 'portrait', 'group': 'group of people'
+        }
         
-        for corner in corners:
-            if np.std(corner) > 50 and np.mean(corner) > 200:
-                self.results['errors'].append("❌ Possible watermark/logo detected in corner")
-                return False
+        subject = 'person'
+        for key, val in subjects.items():
+            if key in name_clean:
+                subject = val
+                break
         
-        return True
+        # Scene detection based on filename
+        scene_keywords = {
+            'office': 'modern office environment',
+            'hospital': 'hospital or medical facility',
+            'clinic': 'medical clinic',
+            'home': 'home environment',
+            'studio': 'professional photo studio',
+            'outdoor': 'outdoor natural setting',
+            'street': 'urban street scene'
+        }
+        
+        scene = 'professional studio or clean environment'
+        for key, val in scene_keywords.items():
+            if key in name_clean:
+                scene = val
+                break
+        
+        return subject, scene
     
-    def check_aspect_ratio(self):
-        """Professional aspect ratio"""
-        h, w = self.image.shape[:2]
-        ratio = w / h
+    def generate_unique_master_prompt(self):
+        """প্রতিটি ইমেজের জন্য ইউনিক মাস্টার প্রম্পট জেনারেট করে"""
         
-        # Standard stock photo ratios
-        acceptable_ratios = [(4/3, 0.1), (3/2, 0.1), (16/9, 0.1)]
+        subject, scene = self.extract_subject_and_scene()
+        issues = self.results.get('issues', [])
+        metrics = self.results['metrics']
         
-        for std_ratio, tolerance in acceptable_ratios:
-            if abs(ratio - std_ratio) <= tolerance:
-                self.results['metrics']['aspect_ratio'] = f"{ratio:.2f} (Standard)"
-                return True
+        # সমস্যা অনুযায়ী ফিক্স নির্দেশনা
+        fix_instructions = []
         
-        self.results['errors'].append(f"❌ Unusual aspect ratio: {ratio:.2f} (Use 4:3, 3:2, or 16:9)")
-        return False
-    
-    def calculate_confidence(self):
-        """Calculate Adobe approval confidence %"""
-        total_checks = 7
-        passed_checks = total_checks - len(self.results['errors'])
-        
-        confidence = (passed_checks / total_checks) * 100
-        
-        # Adjust based on metrics
-        sharpness = self.results['metrics'].get('sharpness_score', 0)
-        if sharpness > 150:
-            confidence += 10
-        elif sharpness < 90:
-            confidence -= 20
-            
-        megapixels = self.results['metrics'].get('megapixels', 0)
-        if megapixels > 20:
-            confidence += 10
-        elif megapixels < 8:
-            confidence -= 15
-            
-        return min(100, max(0, confidence))
-    
-    def run_guarantee_check(self):
-        """Run complete 100% guarantee check"""
-        if not self.load_image():
-            self.results['adobe_guarantee'] = False
-            self.results['verdict'] = 'FAIL'
-            self.results['confidence'] = 0
-            return self.results
-        
-        # Run all checks
-        checks = [
-            ('Resolution', self.check_resolution_guarantee),
-            ('Sharpness', self.check_sharpness_guarantee),
-            ('Noise', self.check_noise_guarantee),
-            ('Compression', self.check_compression_artifacts),
-            ('Texture/Waxy', self.check_waxy_skin_guarantee),
-            ('Logos', self.check_logos_guarantee),
-            ('Aspect Ratio', self.check_aspect_ratio)
-        ]
-        
-        all_passed = True
-        for check_name, check_func in checks:
-            if not check_func():
-                all_passed = False
-        
-        # Calculate confidence
-        confidence = self.calculate_confidence()
-        self.results['confidence'] = confidence
-        
-        # Final verdict
-        if all_passed and confidence >= 85:
-            self.results['adobe_guarantee'] = True
-            self.results['verdict'] = 'PASS - 100% Adobe Guarantee'
-        elif confidence >= 70:
-            self.results['adobe_guarantee'] = False
-            self.results['verdict'] = 'RISKY - May pass, not guaranteed'
+        if 'low_resolution' in issues:
+            fix_instructions.append("🔧 **RESOLUTION FIX:** Generate at minimum 8MP (3840x2160 or larger)")
         else:
-            self.results['adobe_guarantee'] = False
-            self.results['verdict'] = 'FAIL - Adobe will reject'
+            fix_instructions.append("✅ Keep current resolution or higher")
+            
+        if 'blurry' in issues:
+            fix_instructions.append("🔧 **SHARPNESS FIX:** Use faster shutter speed, better lens, or AI upscaler with sharpening")
+        elif 'soft_focus' in issues:
+            fix_instructions.append("🔧 **FOCUS FIX:** Ensure main subject is tack-sharp, use focus stacking if needed")
+        else:
+            fix_instructions.append("✅ Maintain excellent sharpness")
+            
+        if 'noisy' in issues:
+            fix_instructions.append("🔧 **NOISE FIX:** Use lower ISO (100-400), better lighting, or AI denoise")
+        else:
+            fix_instructions.append("✅ Keep noise-free")
+            
+        if 'underexposed' in issues:
+            fix_instructions.append("🔧 **EXPOSURE FIX:** Add more light, increase exposure by +1 stop")
+        elif 'overexposed' in issues:
+            fix_instructions.append("🔧 **EXPOSURE FIX:** Reduce highlights, use fill light")
+        else:
+            fix_instructions.append("✅ Proper exposure maintained")
+            
+        if 'waxy' in issues:
+            fix_instructions.append("🔧 **TEXTURE FIX:** Avoid over-smoothing, preserve natural skin pores and texture")
+        else:
+            fix_instructions.append("✅ Natural texture preserved")
         
-        return self.results
+        # জেনারেটেড প্রম্পট তৈরি
+        prompt = f"""# 🎨 MASTER PROMPT FOR ADOBE STOCK - RE-CREATION
 
-def main():
-    st.title("✅ 100% Adobe Stock Guarantee Checker")
-    st.markdown("### *এখানে PASS করলে Adobe Stock 100% APPROVE করবে*")
-    
-    # Info banner
-    st.info("""
-    🔒 **Guarantee Policy:** 
-    এই টুল Adobe-র চেয়েও STRICT। এখানে সব চেক পাস করলে আপনার ইমেজ 
-    Adobe Stock এ APPROVE হওয়ার সম্ভাবনা 95%+। 
-    কোনো false positive থাকবে না - strictest possible calibration.
-    """)
-    
-    # File upload
-    uploaded_files = st.file_uploader(
-        "📤 Select Images (JPG/JPEG only)",
-        type=['jpg', 'jpeg', 'JPG', 'JPEG'],
-        accept_multiple_files=True
-    )
-    
-    if uploaded_files:
-        temp_dir = tempfile.mkdtemp()
-        results_list = []
-        
-        progress_bar = st.progress(0)
-        
-        for idx, file in enumerate(uploaded_files):
-            temp_path = os.path.join(temp_dir, file.name)
-            with open(temp_path, 'wb') as f:
-                f.write(file.getbuffer())
-            
-            # Run check
-            checker = AdobeStock100PercentGuarantee(temp_path)
-            result = checker.run_guarantee_check()
-            result['filename'] = file.name
-            
-            # Create thumbnail
-            img = Image.open(temp_path)
-            img.thumbnail((100, 100))
-            buffered = io.BytesIO()
-            img.save(buffered, format="JPEG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            result['thumbnail'] = f"data:image/jpeg;base64,{img_str}"
-            
-            results_list.append(result)
-            progress_bar.progress((idx + 1) / len(uploaded_files))
-        
-        # Display results
-        st.markdown("---")
-        
-        for res in results_list:
-            if res['adobe_guarantee']:
-                st.markdown(f"""
-                <div class="guarantee-pass">
-                    <h2>✅ 100% ADOBE STOCK GUARANTEE</h2>
-                    <p>{res['filename']} - Adobe WILL approve this image</p>
-                    <p>Confidence: {res['confidence']}%</p>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="guarantee-fail">
-                    <h2>❌ ADOBE WILL REJECT</h2>
-                    <p>{res['filename']}</p>
-                    <p>Confidence: {res['confidence']}%</p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Show metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Megapixels", res['metrics'].get('megapixels', 'N/A'))
-            with col2:
-                st.metric("Sharpness", res['metrics'].get('sharpness_score', 'N/A'))
-            with col3:
-                st.metric("Noise", res['metrics'].get('noise_level', 'N/A'))
-            with col4:
-                st.metric("Texture", res['metrics'].get('texture_entropy', 'N/A'))
-            
-            # Show errors
-            if res['errors']:
-                st.error("**Reasons Adobe would reject:**")
-                for err in res['errors']:
-                    st.write(f"• {err}")
-            
-            st.markdown("---")
-        
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        
-        # Statistics
-        passed = sum(1 for r in results_list if r['adobe_guarantee'])
-        st.success(f"""
-        ### Summary:
-        - Total Images: {len(results_list)}
-        - ✅ Will be APPROVED by Adobe: {passed}
-        - ❌ Will be REJECTED by Adobe: {len(results_list) - passed}
-        """)
-        
-    else:
-        st.info("👆 Upload images to check Adobe Stock guarantee")
+## 📸 Original Image Analysis
+- **Filename:** {os.path.basename(self.image_path)}
+- **Subject:** {subject.title()}
+- **Scene:** {scene.title()}
+- **Current Issues:** {', '.join(issues) if issues else 'None - already good'}
 
-if __name__ == "__main__":
-    main()
+## 🎯 THE EXACT PROMPT TO RE-CREATE THIS IMAGE

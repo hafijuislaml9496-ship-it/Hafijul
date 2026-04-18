@@ -6,8 +6,8 @@ from skimage.restoration import estimate_sigma
 import pytesseract
 import os
 
-# পেজ সেটআপ
-st.set_page_config(page_title="Adobe Stock Pro Auditor", layout="wide")
+# কনফিগারেশন
+st.set_page_config(page_title="Adobe Stock Master Intelligence", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,61 +17,72 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Adobe Stock Expert Auditor (Graphics Integrity Mode)")
-st.write("এই টুলটি এখন ছবির আইকন এবং গ্রাফিক্সের খুঁত (Deformed Shapes) শনাক্ত করতে সক্ষম।")
+st.title("🛡️ Adobe Stock Expert Auditor (Smart Context Mode)")
+st.write("এই টুলটি এখন নিজে থেকেই বুঝবে ছবিতে আইকন আছে কি না এবং সেই অনুযায়ী নিখুঁত অডিট করবে।")
 
 uploaded_files = st.file_uploader("আপনার ছবিগুলো আপলোড করুন...", type=["jpg", "jpeg"], accept_multiple_files=True)
 
-def analyze_graphics_integrity(img_array):
+def analyze_smart_graphics(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    # এজ ডিটেকশন দিয়ে আইকনগুলোর গঠন দেখা
-    edges = cv2.Canny(gray, 50, 150)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    messy_count = 0
-    for cnt in contours:
-        perimeter = cv2.arcLength(cnt, True)
-        area = cv2.contourArea(cnt)
-        if area > 10:
-            # যদি শেপ খুব বেশি জটিল বা আঁকাবাঁকা হয় (নন-স্মুথ আইকন)
-            circularity = 4 * np.pi * (area / (perimeter * perimeter))
-            if circularity < 0.3: # এটি নির্দেশ করে শেপটি ভাঙাচোরা বা অগোছালো
-                messy_count += 1
-    return messy_count
+    # ১. প্রথমে দেখি ছবিতে কি কোনো উজ্জ্বল ডিজিটাল এলিমেন্ট (Icons/UI) আছে?
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # যদি অনেকগুলো ছোট ছোট উজ্জ্বল অবজেক্ট থাকে, তবে ধরে নেব আইকন আছে
+    has_icons = len(contours) > 5
+    messy_graphics = False
+    
+    if has_icons:
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 10:
+                perimeter = cv2.arcLength(cnt, True)
+                if perimeter == 0: continue
+                circularity = 4 * np.pi * (area / (perimeter * perimeter))
+                # যদি শেপটি আঁকাবাঁকা হয় (এআই জেনারেটেড ভাঙা আইকন)
+                if circularity < 0.4:
+                    messy_graphics = True
+                    break
+    
+    return has_icons, messy_graphics
 
 def analyze_image(img_array, pil_img, filename):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
     logs, score = [], 100
     
-    # ১. আইকন ইন্টিগ্রিটি চেক (আসল সাবজেক্টের ভুল ধরা)
-    messy_shapes = analyze_graphics_integrity(img_array)
-    if messy_shapes > 25:
-        score -= 40
-        logs.append(f"❌ Deformed Graphics: আইকনগুলো ভাঙাচোরা বা অগোছালো।")
+    # ১. স্মার্ট গ্রাফিক্স চেক
+    has_icons, is_messy = analyze_smart_graphics(img_array)
+    if has_icons:
+        if is_messy:
+            score -= 45
+            logs.append("❌ Deformed UI/Icons: ভাসমান আইকনগুলো ভাঙাচোরা বা অগোছালো।")
+        else:
+            logs.append("✅ Graphic Integrity: আইকনগুলো নিখুঁত।")
 
-    # ২. শার্পনেস এবং ফোকাস
-    gh, gw = h//6, w//6
-    peak_sharp = max([cv2.Laplacian(gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw], cv2.CV_64F).var() for i in range(6) for j in range(6)])
-    if peak_sharp < 45:
-        score -= 30
-        logs.append("❌ Soft Focus: গ্রাফিক্সগুলো ঝাপসা।")
-
-    # ৩. টেক্সট এবং লোগো
-    try:
-        text = pytesseract.image_to_string(pil_img).strip()
-        if len(text) > 3:
-            score -= 50
-            logs.append(f"❌ Logo/Text Detected: '{text[:10]}'")
-    except: pass
-    
-    # ৪. রেজোলিউশন
+    # ২. রেজোলিউশন চেক
     mp = (pil_img.size[0] * pil_img.size[1]) / 1_000_000
     if mp < 4.0:
         score -= 40
         logs.append(f"❌ Low Res ({mp:.2f}MP)")
 
-    # সাবজেক্টের নাম (ফাইলের নাম থেকে)
+    # ৩. শার্পনেস এবং ফোকাস (প্রফেশনাল স্ট্যান্ডার্ড)
+    gh, gw = h//6, w//6
+    peak_sharp = max([cv2.Laplacian(gray[i*gh:(i+1)*gh, j*gw:(j+1)*gw], cv2.CV_64F).var() for i in range(6) for j in range(6)])
+    if peak_sharp < 45:
+        score -= 30
+        logs.append("❌ Soft Focus: ছবিটি যথেষ্ট শার্প নয়।")
+
+    # ৪. লোগো ও টেক্সট ডিটেকশন
+    try:
+        text = pytesseract.image_to_string(pil_img).strip()
+        if len(text) > 3:
+            score -= 50
+            logs.append(f"❌ IP Claim: লোগো বা টেক্সট পাওয়া গেছে।")
+    except: pass
+
+    # ৫. সাবজেক্ট (ফাইলের নাম থেকে)
     subject = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ')[:20]
     
     return score, logs, subject
@@ -88,11 +99,9 @@ if uploaded_files:
             st.image(thumb)
         with col2:
             st.write(f"**{uploaded_file.name}**")
-            st.caption(f"Category: {subject.title()}")
-            if logs:
-                for log in logs: st.write(log)
-            else:
-                st.write("✅ কোয়ালিটি অ্যাডোবি স্ট্যান্ডার্ড অনুযায়ী নিখুঁত।")
+            st.caption(f"Context: {subject.title()}")
+            for log in logs: st.write(log)
+            if not logs: st.write("✅ কোয়ালিটি পারফেক্ট।")
         with col3:
             if score >= 80: st.markdown('<span class="status-pass">ACCEPTED</span>', unsafe_allow_html=True)
             elif score >= 50: st.markdown('<span class="status-risk">RISKY</span>', unsafe_allow_html=True)
@@ -100,7 +109,7 @@ if uploaded_files:
             st.write(f"Score: **{score}%**")
         with col4:
             with st.popover("Master Prompt"):
-                q_fix = "ultra-sharp vector icons, perfectly symmetrical shapes, clean geometric lines"
-                m_prompt = f"Professional commercial stock photography of {subject}, {q_fix}, photorealistic, no text, no logo, commercially ready --ar 16:9 --v 6.0"
+                q_fix = "perfectly symmetrical geometric icons, clean vector lines, sharp focus" if "UI/Icons" in str(logs) else "ultra-sharp focus, professional lighting"
+                m_prompt = f"Professional stock photography of {subject}, {q_fix}, 8k, commercially ready, no logo --v 6.0"
                 st.code(m_prompt, language="text")
         st.divider()

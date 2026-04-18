@@ -7,7 +7,6 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-import pandas as pd
 import io
 import base64
 import tempfile
@@ -25,30 +24,30 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    .status-accepted {
-        background-color: #00ff9d;
-        color: #000;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: bold;
-        display: inline-block;
-    }
-    .status-risky {
-        background-color: #ffb443;
-        color: #000;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: bold;
-        display: inline-block;
-    }
-    .status-rejected {
-        background-color: #ff4444;
-        color: #fff;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-weight: bold;
-        display: inline-block;
-    }
+.status-accepted {
+    background-color: #00ff9d;
+    color: #000;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: bold;
+    display: inline-block;
+}
+.status-risky {
+    background-color: #ffb443;
+    color: #000;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: bold;
+    display: inline-block;
+}
+.status-rejected {
+    background-color: #ff4444;
+    color: #fff;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: bold;
+    display: inline-block;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,7 +174,6 @@ class AdobeStockAuditor:
         """প্রম্পট জেনারেট করে"""
         subject = self.extract_subject()
         errors = self.results['errors']
-        metrics = self.results['metrics']
         
         # Build fix instructions
         fixes = []
@@ -194,54 +192,60 @@ class AdobeStockAuditor:
             fixes.append("Maintain current quality")
         
         # Master prompt
-        master_prompt = f"""
-==========================================
-MASTER PROMPT FOR ADOBE STOCK
-==========================================
-
-Original File: {os.path.basename(self.image_path)}
-Subject: {subject.title()}
-Current Score: {self.results['score']}/100
-Issues Found: {len(errors)}
-
-==========================================
-COPY THIS PROMPT TO AI IMAGE GENERATOR
-==========================================
-
-"Ultra-realistic stock photo of {subject} in professional environment. 8K resolution, crystal clear sharp focus. Natural skin texture with visible pores, no waxy appearance. Professional commercial photography quality. Clean background, no logos or watermarks. Perfect exposure, natural lighting. Shot on Sony A7R IV, 85mm lens, f/2.8, ISO 100. Editorial quality, Adobe Stock ready."
-
-==========================================
-FIXES NEEDED FOR THIS IMAGE
-==========================================
-
-{chr(10).join(f'- {fix}' for fix in fixes)}
-
-==========================================
-TECHNICAL REQUIREMENTS
-==========================================
-
-- Resolution: 8MP minimum (3840x2160)
-- Sharpness: Laplacian variance > 80
-- Noise: Under 5.0
-- Format: JPEG, sRGB
-- Aspect Ratio: 4:3, 3:2, or 16:9
-- Max File Size: 45MB
-
-==========================================
-AVOID THESE
-==========================================
-
-- Blurry or soft focus
-- Excessive noise or grain
-- Waxy/plastic skin texture
-- Logos, watermarks, brands
-- Over/under exposure
-- AI artifacts
-
-==========================================
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-==========================================
-"""
+        master_prompt_lines = []
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("MASTER PROMPT FOR ADOBE STOCK")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("")
+        master_prompt_lines.append(f"Original File: {os.path.basename(self.image_path)}")
+        master_prompt_lines.append(f"Subject: {subject.title()}")
+        master_prompt_lines.append(f"Current Score: {self.results['score']}/100")
+        master_prompt_lines.append(f"Issues Found: {len(errors)}")
+        master_prompt_lines.append("")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("COPY THIS PROMPT TO AI IMAGE GENERATOR")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("")
+        
+        main_prompt = f'"Ultra-realistic stock photo of {subject} in professional environment. 8K resolution, crystal clear sharp focus. Natural skin texture with visible pores, no waxy appearance. Professional commercial photography quality. Clean background, no logos or watermarks. Perfect exposure, natural lighting. Shot on Sony A7R IV, 85mm lens, f/2.8, ISO 100. Editorial quality, Adobe Stock ready."'
+        master_prompt_lines.append(main_prompt)
+        master_prompt_lines.append("")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("FIXES NEEDED FOR THIS IMAGE")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("")
+        
+        for fix in fixes:
+            master_prompt_lines.append(f"- {fix}")
+        
+        master_prompt_lines.append("")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("TECHNICAL REQUIREMENTS")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("")
+        master_prompt_lines.append("- Resolution: 8MP minimum (3840x2160)")
+        master_prompt_lines.append("- Sharpness: Laplacian variance > 80")
+        master_prompt_lines.append("- Noise: Under 5.0")
+        master_prompt_lines.append("- Format: JPEG, sRGB")
+        master_prompt_lines.append("- Aspect Ratio: 4:3, 3:2, or 16:9")
+        master_prompt_lines.append("- Max File Size: 45MB")
+        master_prompt_lines.append("")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("AVOID THESE")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append("")
+        master_prompt_lines.append("- Blurry or soft focus")
+        master_prompt_lines.append("- Excessive noise or grain")
+        master_prompt_lines.append("- Waxy/plastic skin texture")
+        master_prompt_lines.append("- Logos, watermarks, brands")
+        master_prompt_lines.append("- Over/under exposure")
+        master_prompt_lines.append("- AI artifacts")
+        master_prompt_lines.append("")
+        master_prompt_lines.append("=" * 50)
+        master_prompt_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        master_prompt_lines.append("=" * 50)
+        
+        master_prompt = "\n".join(master_prompt_lines)
         
         # Simple prompt
         simple_prompt = f'"Ultra-realistic stock photo of {subject}, 8K, crystal clear sharp focus, natural skin texture, clean background, no logos, professional lighting, Adobe Stock quality"'
@@ -283,7 +287,6 @@ def main():
         st.markdown("- শার্পনেস (ব্লার চেক)")
         st.markdown("- নয়েজ লেভেল")
         st.markdown("- এক্সপোজার (লাইটিং)")
-        st.markdown("- ওয়াক্সি স্কিন")
     
     uploaded_files = st.file_uploader(
         "📤 ইমেজ আপলোড করুন (JPG/JPEG)",
@@ -352,11 +355,11 @@ def main():
                             <h3>{res['filename']}</h3>
                             <span class="status-{status_color}">{res['status']}</span>
                             <span style="margin-left: 10px;">Score: <strong>{res['score']}/100</strong></span>
-                            <br><br>
-                            <strong>📐 Resolution:</strong> {res['metrics'].get('megapixels', 'N/A')} MP<br>
-                            <strong>🔍 Sharpness:</strong> {res['metrics'].get('sharpness', 'N/A')}<br>
-                            <strong>📊 Noise:</strong> {res['metrics'].get('noise', 'N/A')}<br>
-                            <strong>💡 Brightness:</strong> {res['metrics'].get('brightness', 'N/A')}
+                            <br/><br/>
+                            <strong>Resolution:</strong> {res['metrics'].get('megapixels', 'N/A')} MP<br/>
+                            <strong>Sharpness:</strong> {res['metrics'].get('sharpness', 'N/A')}<br/>
+                            <strong>Noise:</strong> {res['metrics'].get('noise', 'N/A')}<br/>
+                            <strong>Brightness:</strong> {res['metrics'].get('brightness', 'N/A')}
                         </td>
                     </tr>
                 </table>
@@ -380,41 +383,45 @@ def main():
                 st.markdown("### 🎨 এই ইমেজ ঠিক করে বানানোর জন্য AI Prompt")
                 
                 # Full prompt
-                with st.container():
-                    st.code(res['master_prompt'], language='markdown')
-                    
-                    # Copy button
-                    if st.button(f"📋 পুরো প্রম্পট কপি করুন", key=f"full_{res['filename']}"):
-                        st.success("✅ প্রম্পট কপি হয়েছে!")
-                        st.markdown(f"""
-                        <script>
-                        navigator.clipboard.writeText({repr(res['master_prompt'])});
-                        </script>
-                        """, unsafe_allow_html=True)
+                st.code(res['master_prompt'], language='markdown')
+                
+                # Copy button for full prompt
+                copy_key1 = f"full_{res['filename']}_{idx}"
+                if st.button(f"📋 পুরো প্রম্পট কপি করুন", key=copy_key1):
+                    st.success("✅ প্রম্পট কপি হয়েছে!")
+                    st.markdown(f"""
+                    <script>
+                    navigator.clipboard.writeText({repr(res['master_prompt'])});
+                    </script>
+                    """, unsafe_allow_html=True)
                 
                 # Simple prompt
                 st.markdown("### 📝 সহজ ভার্সন (এক লাইনে)")
                 st.info(res['recreation_prompt'])
                 
-                if st.button(f"📋 সহজ প্রম্পট কপি করুন", key=f"simple_{res['filename']}"):
+                # Copy button for simple prompt
+                copy_key2 = f"simple_{res['filename']}_{idx}"
+                if st.button(f"📋 সহজ প্রম্পট কপি করুন", key=copy_key2):
                     st.success("✅ সহজ প্রম্পট কপি হয়েছে!")
             
             st.markdown("---")
         
         # Download all prompts
-        if any(r['status'] != 'ACCEPTED' for r in all_results):
+        rejected_images = [r for r in all_results if r['status'] != 'ACCEPTED']
+        if rejected_images:
             st.markdown("### 📥 সব প্রম্পট একসাথে ডাউনলোড")
             
             all_text = ""
-            for r in all_results:
-                if r['status'] != 'ACCEPTED':
-                    all_text += f"\n{'='*60}\n"
-                    all_text += f"File: {r['filename']}\n"
-                    all_text += f"Status: {r['status']}\n"
-                    all_text += f"Score: {r['score']}/100\n"
-                    all_text += f"{'='*60}\n\n"
-                    all_text += r['master_prompt']
-                    all_text += f"\n\nSimple Prompt:\n{r['recreation_prompt']}\n"
+            for r in rejected_images:
+                all_text += "\n" + "="*60 + "\n"
+                all_text += f"File: {r['filename']}\n"
+                all_text += f"Status: {r['status']}\n"
+                all_text += f"Score: {r['score']}/100\n"
+                all_text += "="*60 + "\n\n"
+                all_text += r['master_prompt']
+                all_text += "\n\nSimple Prompt:\n"
+                all_text += r['recreation_prompt']
+                all_text += "\n"
             
             st.download_button(
                 label="📥 ডাউনলোড করুন (TXT)",
@@ -433,3 +440,4 @@ def main():
             **আপলোড করুন:** doctor_tablet.jpg
             
             **রিজেক্ট করলে প্রম্পট দেখাবে:**
+            
